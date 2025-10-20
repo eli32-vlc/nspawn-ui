@@ -1,0 +1,67 @@
+/* Custom styles for nspawn-ui */
+body {
+    background-color: #121212;
+    color: #e0e0e0;
+}
+
+.navbar-dark .navbar-nav .nav-link {
+    color: rgba(255, 255, 255, 0.75);
+}
+
+.navbar-dark .navbar-nav .nav-link:hover {
+    color: rgba(255, 255, 255, 1);
+}
+
+.card {
+    border: 1px solid #333;
+}
+
+.table-dark {
+    --bs-table-bg: #212529;
+    --bs-table-color: #fff;
+}
+
+.table-dark th,
+.table-dark td,
+.table-dark thead th {
+    border-color: #444;
+}
+
+pre {
+    background-color: #1e1e1e;
+    color: #dcdcdc;
+    border: 1px solid #444;
+}
+
+.bg-dark {
+    background-color: #1e1e1e !important;
+}
+
+.text-light {
+    color: #f8f9fa !important;
+}
+
+.btn-primary {
+    background-color: #0d6efd;
+    border-color: #0d6efd;
+}
+
+.btn-primary:hover {
+    background-color: #0b5ed7;
+    border-color: #0a58ca;
+}
+
+.form-control,
+.form-select {
+    background-color: #2d2d2d;
+    border: 1px solid #444;
+    color: #fff;
+}
+
+.form-control:focus,
+.form-select:focus {
+    background-color: #2d2d2d;
+    border-color: #86b7fe;
+    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+    color: #fff;
+}
