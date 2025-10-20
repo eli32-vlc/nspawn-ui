@@ -75,6 +75,7 @@ echo "Admin credentials created."
 
 # --- Configure systemd Service ---
 echo "Configuring systemd service for the API..."
+read -p "Enter the VM's IPv4 address (e.g., 192.168.2.27) to bind the WebUI to: " vm_ipv4_address
 
 cat > /etc/systemd/system/nspawn-ui.service << EOL
 [Unit]
@@ -84,7 +85,7 @@ After=network.target
 [Service]
 User=root
 WorkingDirectory=$API_DIR/backend
-ExecStart=/usr/bin/python3 -m uvicorn main:app --host :: --port 8000
+ExecStart=/usr/bin/python3 -m uvicorn main:app --host $vm_ipv4_address --port 8000
 Restart=always
 
 [Install]
