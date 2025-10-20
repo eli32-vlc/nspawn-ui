@@ -1,0 +1,25 @@
+[Unit]
+Description=nspawn-ui API Service
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=nspawn-ui
+Group=nspawn-ui
+WorkingDirectory=/opt/nspawn-ui
+ExecStart=/usr/bin/python3 -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/nspawn-ui /opt/nspawn-ui/api /opt/nspawn-ui/webui /opt/nspawn-ui/config /var/lib/machines
+AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_ADMIN
+
+[Install]
+WantedBy=multi-user.target
