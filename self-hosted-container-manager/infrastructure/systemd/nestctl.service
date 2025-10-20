@@ -1,0 +1,12 @@
+[Unit]
+Description=Nestctl Service for Self-Hosted Container Manager
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 /path/to/backend/src/main.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

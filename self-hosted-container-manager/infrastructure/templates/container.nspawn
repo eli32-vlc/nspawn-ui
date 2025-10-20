@@ -1,0 +1,53 @@
+# This file contains the template configuration for systemd-nspawn containers.
+
+[Exec]
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=yes
+NoNewPrivileges=true
+ReadOnlyPaths=/var/log
+ReadOnlyPaths=/etc
+ReadOnlyPaths=/usr
+ReadOnlyPaths=/lib
+ReadOnlyPaths=/lib64
+ReadOnlyPaths=/boot
+ReadOnlyPaths=/srv
+ReadOnlyPaths=/opt
+ReadOnlyPaths=/root
+ReadOnlyPaths=/home
+ReadOnlyPaths=/run
+ReadOnlyPaths=/var/cache
+ReadOnlyPaths=/var/lib
+ReadOnlyPaths=/var/tmp
+ReadOnlyPaths=/var/spool
+ReadOnlyPaths=/var/log/journal
+ReadOnlyPaths=/var/log/containers
+ReadOnlyPaths=/var/log/syslog
+ReadOnlyPaths=/var/log/messages
+
+[Network]
+# Configure dual-stack networking
+IPAddress=192.168.0.2
+IPv6Address=fd00::2
+# Add additional network configurations as needed
+
+[Container]
+# Enable Docker-in-CT support
+ExecStartPre=/usr/bin/docker -d
+ExecStart=/usr/bin/systemd-nspawn --directory=/var/lib/machines/%n --network-veth --private-network
+ExecStop=/usr/bin/systemd-nspawn --directory=/var/lib/machines/%n --network-veth --private-network --kill-mode=process
+
+# Nested containers support
+# Uncomment the following line to enable nested containers
+# ExecStartPost=/usr/bin/systemd-nspawn --directory=/var/lib/machines/%n --network-veth --private-network --bind=/var/lib/machines
+
+[Service]
+Type=simple
+Restart=on-failure
+User=root
+Group=root
+Environment=HOME=/root
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target

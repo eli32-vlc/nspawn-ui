@@ -1,0 +1,26 @@
+FROM ubuntu:24.04
+
+# Install necessary packages
+RUN apt-get update && apt-get install -y \
+    systemd-container \
+    docker.io \
+    python3 \
+    python3-pip \
+    python3-venv \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up the working directory
+WORKDIR /app
+
+# Copy backend source code
+COPY backend/ /app/backend/
+
+# Install Python dependencies
+RUN pip3 install --no-cache-dir -r /app/backend/pyproject.toml
+
+# Expose necessary ports
+EXPOSE 8000
+
+# Command to run the application
+CMD ["python3", "/app/backend/src/main.py"]

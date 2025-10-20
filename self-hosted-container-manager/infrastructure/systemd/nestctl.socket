@@ -1,0 +1,10 @@
+[Unit]
+Description=Socket for the self-hosted container manager API
+Documentation=man:nestctl(1)
+
+[Socket]
+ListenDatagram=0.0.0.0:8080
+ListenDatagram=[::]:8080
+
+[Install]
+WantedBy=sockets.target
