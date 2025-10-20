@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>nspawn-ui</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="style.css" rel="stylesheet">
+  </head>
+  <body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="#">nspawn-ui</a>
+        <button class="btn btn-outline-light" id="logout-button">Logout</button>
+      </div>
+    </nav>
+
+    <div class="container mt-4">
+      <h2>Containers</h2>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Status</th>
+            <th>IP</th>
+            <th>Image</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="container-list">
+          <!-- Container rows will be inserted here by JavaScript -->
+        </tbody>
+      </table>
+
+      <hr>
+
+      <h2>Create Container</h2>
+      <form id="create-container-form">
+        <div class="mb-3">
+          <label for="distro" class="form-label">Distribution</label>
+          <input type="text" class="form-control" id="distro" required>
+        </div>
+        <div class="mb-3">
+          <label for="root-password" class="form-label">Root Password</label>
+          <input type="password" class="form-control" id="root-password" required>
+        </div>
+        <div class="mb-3">
+          <label for="cpu-max" class="form-label">CPU Max (%)</label>
+          <input type="number" class="form-control" id="cpu-max">
+        </div>
+        <div class="mb-3">
+          <label for="memory-max" class="form-label">Memory Max (MB)</label>
+          <input type="number" class="form-control" id="memory-max">
+        </div>
+        <div class="mb-3">
+          <label for="storage-max" class="form-label">Storage Max (GB)</label>
+          <input type="number" class="form-control" id="storage-max">
+        </div>
+        <button type="submit" class="btn btn-primary">Create</button>
+      </form>
+
+      <hr>
+
+      <h2>Logs</h2>
+      <pre id="log-view" class="bg-light p-3">Select a container to view logs</pre>
+    </div>
+
+    <!-- SSH Setup Modal -->
+    <div class="modal fade" id="sshModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Set up SSH</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <form id="ssh-form">
+              <input type="hidden" id="ssh-container-name">
+              <div class="mb-3">
+                <label for="ssh-username" class="form-label">Username</label>
+                <input type="text" class="form-control" id="ssh-username" required>
+              </div>
+              <button type="submit" class="btn btn-primary">Submit</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SSH Private Key Modal -->
+    <div class="modal fade" id="sshKeyModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Your SSH Private Key</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <p>Save this private key and use it to connect to your container.</p>
+            <pre id="ssh-private-key"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="script.js"></script>
+  </body>
+</html>
