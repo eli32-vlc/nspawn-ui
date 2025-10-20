@@ -1,0 +1,1022 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <title>CT Manager</title>
+        <link
+            href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+            rel="stylesheet"
+        />
+        <style>
+            body {
+                padding: 1rem;
+            }
+            pre {
+                white-space: pre-wrap;
+                word-wrap: break-word;
+                background: #111;
+                color: #ddd;
+                padding: 1rem;
+                border-radius: 0.5rem;
+                height: 300px;
+                overflow-y: auto;
+            }
+            .ip-badge {
+                font-family: monospace;
+            }
+            .monospace {
+                font-family:
+                    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                    "Liberation Mono", "Courier New", monospace;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1 class="mb-4">systemd-nspawn Container Manager</h1>
+
+            <ul class="nav nav-tabs" id="tabs" role="tablist">
+                <li class="nav-item">
+                    <button
+                        class="nav-link active"
+                        id="tab-containers"
+                        data-bs-toggle="tab"
+                        data-bs-target="#pane-containers"
+                        type="button"
+                    >
+                        Containers
+                    </button>
+                </li>
+                <li class="nav-item">
+                    <button
+                        class="nav-link"
+                        id="tab-network"
+                        data-bs-toggle="tab"
+                        data-bs-target="#pane-network"
+                        type="button"
+                    >
+                        Network & Firewall
+                    </button>
+                </li>
+                <li class="nav-item">
+                    <button
+                        class="nav-link"
+                        id="tab-logs"
+                        data-bs-toggle="tab"
+                        data-bs-target="#pane-logs"
+                        type="button"
+                    >
+                        Logs
+                    </button>
+                </li>
+            </ul>
+
+            <div class="tab-content mt-3">
+                <div class="tab-pane fade show active" id="pane-containers">
+                    <div class="card mb-4">
+                        <div class="card-header">Create Container</div>
+                        <div class="card-body">
+                            <form id="create-form" class="row g-3">
+                                <div class="col-md-3">
+                                    <label class="form-label">Name</label>
+                                    <input
+                                        class="form-control"
+                                        id="name"
+                                        placeholder="myct"
+                                        required
+                                    />
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Method</label>
+                                    <select class="form-select" id="method">
+                                        <option value="debootstrap">
+                                            debootstrap
+                                        </option>
+                                        <option value="import">
+                                            import (tarball)
+                                        </option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Distro</label>
+                                    <select class="form-select" id="distro">
+                                        <option value="debian">Debian</option>
+                                        <option value="ubuntu">Ubuntu</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Release</label>
+                                    <input
+                                        class="form-control"
+                                        id="release"
+                                        value="bookworm"
+                                    />
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label"
+                                        >Tarball URL/Path (for import)</label
+                                    >
+                                    <input
+                                        class="form-control"
+                                        id="tarball"
+                                        placeholder="http(s)://... or /path/image.tar"
+                                    />
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label"
+                                        >Root Password</label
+                                    >
+                                    <input
+                                        type="password"
+                                        class="form-control"
+                                        id="root_password"
+                                        required
+                                    />
+                                </div>
+                                <div class="col-md-3 form-check mt-4">
+                                    <input
+                                        class="form-check-input"
+                                        type="checkbox"
+                                        id="enable_ssh"
+                                        checked
+                                    />
+                                    <label
+                                        class="form-check-label"
+                                        for="enable_ssh"
+                                        >Enable SSH</label
+                                    >
+                                </div>
+                                <div class="col-md-3 form-check mt-4">
+                                    <input
+                                        class="form-check-input"
+                                        type="checkbox"
+                                        id="enable_docker_sock"
+                                    />
+                                    <label
+                                        class="form-check-label"
+                                        for="enable_docker_sock"
+                                        >Bind host Docker sock</label
+                                    >
+                                </div>
+                                <div class="col-md-2 form-check mt-4">
+                                    <input
+                                        class="form-check-input"
+                                        type="checkbox"
+                                        id="nested"
+                                        checked
+                                    />
+                                    <label class="form-check-label" for="nested"
+                                        >Nested</label
+                                    >
+                                </div>
+                                <div class="col-md-2 form-check mt-4">
+                                    <input
+                                        class="form-check-input"
+                                        type="checkbox"
+                                        id="autostart"
+                                    />
+                                    <label
+                                        class="form-check-label"
+                                        for="autostart"
+                                        >Autostart on boot</label
+                                    >
+                                </div>
+                                <div class="col-12 mt-2">
+                                    <button
+                                        class="btn btn-primary"
+                                        type="submit"
+                                    >
+                                        Create
+                                    </button>
+                                    <span
+                                        id="create-status"
+                                        class="ms-3 text-muted"
+                                    ></span>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div class="d-flex align-items-center mb-2">
+                        <h3 class="me-3">Containers</h3>
+                        <button
+                            class="btn btn-outline-secondary btn-sm"
+                            id="refresh"
+                        >
+                            Refresh
+                        </button>
+                        <span id="list-status" class="ms-3 text-muted"></span>
+                    </div>
+
+                    <div id="container-list" class="row g-3"></div>
+                </div>
+
+                <div class="tab-pane fade" id="pane-network">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <div class="card">
+                                <div class="card-header">
+                                    Global Network Config
+                                </div>
+                                <div class="card-body">
+                                    <form id="netcfg-form" class="row g-3">
+                                        <div class="col-6">
+                                            <label class="form-label"
+                                                >Bridge</label
+                                            >
+                                            <input
+                                                class="form-control"
+                                                id="cfg-bridge"
+                                            />
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="form-label"
+                                                >WAN Interface</label
+                                            >
+                                            <input
+                                                class="form-control"
+                                                id="cfg-wan"
+                                            />
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="form-label"
+                                                >LAN IPv4 CIDR</label
+                                            >
+                                            <input
+                                                class="form-control"
+                                                id="cfg-lan4"
+                                            />
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="form-label"
+                                                >LAN IPv4 GW</label
+                                            >
+                                            <input
+                                                class="form-control"
+                                                id="cfg-lan4gw"
+                                            />
+                                        </div>
+                                        <div class="col-12">
+                                            <label class="form-label"
+                                                >IPv6 Prefix (/64)</label
+                                            >
+                                            <input
+                                                class="form-control"
+                                                id="cfg-v6prefix"
+                                                placeholder="2001:db8:abcd:100::/64"
+                                            />
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="form-label"
+                                                >NAT Backend</label
+                                            >
+                                            <select
+                                                class="form-select"
+                                                id="cfg-nat"
+                                            >
+                                                <option value="nftables">
+                                                    nftables
+                                                </option>
+                                                <option value="iptables">
+                                                    iptables
+                                                </option>
+                                            </select>
+                                        </div>
+                                        <div class="col-6 form-check mt-4">
+                                            <input
+                                                class="form-check-input"
+                                                type="checkbox"
+                                                id="cfg-ndppd"
+                                            />
+                                            <label
+                                                class="form-check-label"
+                                                for="cfg-ndppd"
+                                                >Enable NDP Proxy</label
+                                            >
+                                        </div>
+                                        <div class="col-12">
+                                            <button
+                                                class="btn btn-primary btn-sm"
+                                            >
+                                                Save & Apply
+                                            </button>
+                                            <span
+                                                class="text-muted ms-2"
+                                                id="netcfg-status"
+                                            ></span>
+                                        </div>
+                                    </form>
+                                    <hr />
+                                    <h6>IPv6 Methods</h6>
+                                    <div class="mb-3">
+                                        <label class="form-label"
+                                            >Set Native IPv6 Prefix</label
+                                        >
+                                        <div class="input-group">
+                                            <input
+                                                class="form-control"
+                                                id="native-prefix"
+                                                placeholder="2001:db8:abcd:100::/64"
+                                            />
+                                            <button
+                                                class="btn btn-outline-primary"
+                                                id="btn-native"
+                                            >
+                                                Apply
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="mb-3">
+                                        <details>
+                                            <summary class="fw-bold">
+                                                Configure 6in4
+                                            </summary>
+                                            <div class="row g-2 mt-2">
+                                                <div class="col-6">
+                                                    <input
+                                                        class="form-control"
+                                                        id="he-local4"
+                                                        placeholder="Local IPv4"
+                                                    />
+                                                </div>
+                                                <div class="col-6">
+                                                    <input
+                                                        class="form-control"
+                                                        id="he-server4"
+                                                        placeholder="HE Server IPv4"
+                                                    />
+                                                </div>
+                                                <div class="col-6">
+                                                    <input
+                                                        class="form-control"
+                                                        id="he-client6"
+                                                        placeholder="Client IPv6"
+                                                    />
+                                                </div>
+                                                <div class="col-6">
+                                                    <input
+                                                        class="form-control"
+                                                        id="he-server6"
+                                                        placeholder="Server IPv6"
+                                                    />
+                                                </div>
+                                                <div class="col-12">
+                                                    <input
+                                                        class="form-control"
+                                                        id="he-prefix"
+                                                        placeholder="Routed Prefix e.g. 2001:db8:abcd:100::/64"
+                                                    />
+                                                </div>
+                                                <div class="col-12">
+                                                    <button
+                                                        class="btn btn-outline-primary btn-sm"
+                                                        id="btn-he"
+                                                    >
+                                                        Apply 6in4
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </details>
+                                    </div>
+                                    <div class="mb-3">
+                                        <details>
+                                            <summary class="fw-bold">
+                                                Configure WireGuard
+                                            </summary>
+                                            <div class="row g-2 mt-2">
+                                                <div class="col-4">
+                                                    <input
+                                                        class="form-control"
+                                                        id="wg-if"
+                                                        value="wg0"
+                                                    />
+                                                </div>
+                                                <div class="col-8">
+                                                    <input
+                                                        class="form-control"
+                                                        id="wg-prefix"
+                                                        placeholder="Routed Prefix e.g. 2001:db8:abcd:100::/64"
+                                                    />
+                                                </div>
+                                                <div class="col-12">
+                                                    <textarea
+                                                        class="form-control monospace"
+                                                        id="wg-conf"
+                                                        rows="8"
+                                                        placeholder="[Interface]..."
+                                                    ></textarea>
+                                                </div>
+                                                <div class="col-12">
+                                                    <button
+                                                        class="btn btn-outline-primary btn-sm"
+                                                        id="btn-wg"
+                                                    >
+                                                        Apply WireGuard
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </details>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-6">
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    IPv4 Port Forwarding (DNAT)
+                                </div>
+                                <div class="card-body">
+                                    <form id="pf-form" class="row g-2">
+                                        <div class="col-4">
+                                            <input
+                                                class="form-control"
+                                                id="pf-name"
+                                                placeholder="ct-name"
+                                            />
+                                        </div>
+                                        <div class="col-2">
+                                            <select
+                                                class="form-select"
+                                                id="pf-proto"
+                                            >
+                                                <option>tcp</option>
+                                                <option>udp</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-3">
+                                            <input
+                                                class="form-control"
+                                                id="pf-host"
+                                                placeholder="Host Port"
+                                                type="number"
+                                            />
+                                        </div>
+                                        <div class="col-3">
+                                            <input
+                                                class="form-control"
+                                                id="pf-ct"
+                                                placeholder="CT Port"
+                                                type="number"
+                                            />
+                                        </div>
+                                        <div class="col-12">
+                                            <input
+                                                class="form-control"
+                                                id="pf-ctip"
+                                                placeholder="Optional CT IPv4 override"
+                                            />
+                                        </div>
+                                        <div class="col-12">
+                                            <button
+                                                class="btn btn-success btn-sm"
+                                                data-action="add"
+                                            >
+                                                Add
+                                            </button>
+                                            <button
+                                                class="btn btn-danger btn-sm"
+                                                data-action="remove"
+                                            >
+                                                Remove
+                                            </button>
+                                            <span
+                                                id="pf-status"
+                                                class="ms-2 text-muted"
+                                            ></span>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+
+                            <div class="card">
+                                <div class="card-header">IPv6 Inbound ACLs</div>
+                                <div class="card-body">
+                                    <form id="v6acl-form" class="row g-2">
+                                        <div class="col-4">
+                                            <input
+                                                class="form-control"
+                                                id="v6-name"
+                                                placeholder="ct-name"
+                                            />
+                                        </div>
+                                        <div class="col-2">
+                                            <select
+                                                class="form-select"
+                                                id="v6-proto"
+                                            >
+                                                <option>tcp</option>
+                                                <option>udp</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-3">
+                                            <input
+                                                class="form-control"
+                                                id="v6-port"
+                                                placeholder="Port"
+                                                type="number"
+                                            />
+                                        </div>
+                                        <div class="col-3">
+                                            <input
+                                                class="form-control"
+                                                id="v6-addr"
+                                                placeholder="CT IPv6 (optional)"
+                                            />
+                                        </div>
+                                        <div class="col-12">
+                                            <button
+                                                class="btn btn-success btn-sm"
+                                                data-action="add"
+                                            >
+                                                Add
+                                            </button>
+                                            <button
+                                                class="btn btn-danger btn-sm"
+                                                data-action="remove"
+                                            >
+                                                Remove
+                                            </button>
+                                            <span
+                                                id="v6-status"
+                                                class="ms-2 text-muted"
+                                            ></span>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tab-pane fade" id="pane-logs">
+                    <div class="card">
+                        <div class="card-header">
+                            Live Logs:
+                            <span id="logs-title" class="fw-bold">None</span>
+                        </div>
+                        <div class="card-body">
+                            <pre id="logs"></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <hr class="mt-4 mb-2" />
+            <div class="alert alert-warning">
+                Security note: This demo UI has no authentication and opens root
+                SSH. Harden for production.
+            </div>
+        </div>
+
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+        <script>
+            const api = (path, options = {}) =>
+                fetch(path, options).then(async (r) => {
+                    if (!r.ok) throw new Error(await r.text());
+                    const ct = r.headers.get("content-type") || "";
+                    return ct.includes("application/json")
+                        ? r.json()
+                        : r.text();
+                });
+
+            const elList = document.getElementById("container-list");
+            const elListStatus = document.getElementById("list-status");
+            const elLogs = document.getElementById("logs");
+            const elLogsTitle = document.getElementById("logs-title");
+            let ws;
+
+            function renderContainers(containers) {
+                elList.innerHTML = "";
+                containers.forEach((c) => {
+                    const col = document.createElement("div");
+                    col.className = "col-md-6";
+                    col.innerHTML = `
+          <div class="card">
+            <div class="card-body">
+              <div class="d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">${c.name}</h5>
+                <span class="badge ${c.state === "running" ? "bg-success" : "bg-secondary"}">${c.state}</span>
+              </div>
+              <p class="mt-2 mb-2">${(c.ips || []).map((ip) => `<span class="badge bg-dark ip-badge me-1">${ip}</span>`).join("")}</p>
+              <div class="d-flex flex-wrap gap-2">
+                <button class="btn btn-sm btn-outline-primary" data-action="start" data-name="${c.name}">Start</button>
+                <button class="btn btn-sm btn-outline-warning" data-action="restart" data-name="${c.name}">Restart</button>
+                <button class="btn btn-sm btn-outline-secondary" data-action="stop" data-name="${c.name}">Stop</button>
+                <button class="btn btn-sm btn-outline-danger" data-action="delete" data-name="${c.name}">Delete</button>
+                <button class="btn btn-sm btn-outline-info" data-action="logs" data-name="${c.name}">Logs</button>
+                <button class="btn btn-sm btn-outline-success" data-action="ssh" data-name="${c.name}">Setup SSH</button>
+              </div>
+              <hr/>
+              <form class="row g-2 net-form" data-name="${c.name}">
+                <div class="col-4"><input class="form-control" placeholder="IPv4 CIDR" name="v4"></div>
+                <div class="col-5"><input class="form-control" placeholder="IPv6 CIDR" name="v6"></div>
+                <div class="col-3"><input class="form-control" placeholder="Bridge" name="br"></div>
+                <div class="col-12 form-check">
+                  <input class="form-check-input" type="checkbox" name="restart" id="rst-${c.name}">
+                  <label class="form-check-label" for="rst-${c.name}">Restart to apply</label>
+                </div>
+                <div class="col-12">
+                  <button class="btn btn-sm btn-primary">Apply Network</button>
+                  <button class="btn btn-sm btn-outline-dark ms-2" data-action="autostart">Toggle Autostart</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        `;
+                    elList.appendChild(col);
+                });
+            }
+
+            async function refreshList() {
+                elListStatus.textContent = "Loading...";
+                try {
+                    const data = await api("/api/containers");
+                    renderContainers(data.containers || []);
+                    elListStatus.textContent = "";
+                } catch (e) {
+                    elListStatus.textContent = "Error loading containers";
+                    console.error(e);
+                }
+            }
+
+            function attachListHandlers() {
+                elList.addEventListener("click", async (ev) => {
+                    const btn = ev.target.closest("button[data-action]");
+                    if (!btn) return;
+                    const action = btn.dataset.action;
+                    const name = btn.dataset.name;
+                    try {
+                        if (action === "start")
+                            await api(`/api/containers/${name}/start`, {
+                                method: "POST",
+                            });
+                        if (action === "stop")
+                            await api(`/api/containers/${name}/stop`, {
+                                method: "POST",
+                            });
+                        if (action === "restart")
+                            await api(`/api/containers/${name}/restart`, {
+                                method: "POST",
+                            });
+                        if (action === "delete") {
+                            if (!confirm(`Delete container ${name}?`)) return;
+                            await api(`/api/containers/${name}`, {
+                                method: "DELETE",
+                            });
+                        }
+                        if (action === "ssh") {
+                            const pw = prompt(
+                                "Set/confirm root password for SSH (leave blank to keep current):",
+                                "",
+                            );
+                            await api(`/api/containers/${name}/ssh/setup`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                    root_password: pw || null,
+                                }),
+                            });
+                            alert("SSH setup complete.");
+                        }
+                        if (action === "logs") {
+                            openLogs(name);
+                        }
+                        await refreshList();
+                    } catch (e) {
+                        alert(`Action ${action} failed: ${e}`);
+                    }
+                });
+
+                elList.addEventListener("submit", async (ev) => {
+                    const form = ev.target.closest("form.net-form");
+                    if (!form) return;
+                    ev.preventDefault();
+                    const name = form.dataset.name;
+                    const v4 =
+                        form.querySelector('[name="v4"]').value.trim() || null;
+                    const v6 =
+                        form.querySelector('[name="v6"]').value.trim() || null;
+                    const br =
+                        form.querySelector('[name="br"]').value.trim() || null;
+                    const restart =
+                        form.querySelector('[name="restart"]').checked;
+                    try {
+                        await api(`/api/containers/${name}/network`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                static_ipv4: v4,
+                                static_ipv6: v6,
+                                bridge: br,
+                                restart,
+                            }),
+                        });
+                        alert("Network updated.");
+                        await refreshList();
+                    } catch (e) {
+                        alert("Failed to update network: " + e);
+                    }
+                });
+
+                elList.addEventListener("click", async (ev) => {
+                    const btn = ev.target.closest(
+                        'button[data-action="autostart"]',
+                    );
+                    if (!btn) return;
+                    ev.preventDefault();
+                    const form = btn.closest("form.net-form");
+                    const name = form.dataset.name;
+                    const enable = confirm(
+                        "Enable autostart for " + name + "? Cancel = disable",
+                    );
+                    try {
+                        await api(`/api/containers/${name}/autostart`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ enabled: enable }),
+                        });
+                        alert("Autostart updated.");
+                    } catch (e) {
+                        alert("Failed: " + e);
+                    }
+                });
+            }
+
+            function openLogs(name) {
+                try {
+                    if (ws) ws.close();
+                } catch {}
+                elLogsTitle.textContent = name;
+                elLogs.textContent = "";
+                const proto = location.protocol === "https:" ? "wss" : "ws";
+                ws = new WebSocket(
+                    `${proto}://${location.host}/ws/logs/${encodeURIComponent(name)}`,
+                );
+                ws.onmessage = (ev) => {
+                    elLogs.textContent += ev.data;
+                    elLogs.scrollTop = elLogs.scrollHeight;
+                };
+            }
+
+            // Global network config
+            async function loadNetCfg() {
+                const cfg = await api("/api/network/config");
+                document.getElementById("cfg-bridge").value = cfg.bridge || "";
+                document.getElementById("cfg-wan").value = cfg.wan_iface || "";
+                document.getElementById("cfg-lan4").value = cfg.lan4_cidr || "";
+                document.getElementById("cfg-lan4gw").value = cfg.lan4_gw || "";
+                document.getElementById("cfg-v6prefix").value =
+                    cfg.ipv6_prefix || "";
+                document.getElementById("cfg-nat").value =
+                    cfg.nat_backend || "nftables";
+                document.getElementById("cfg-ndppd").checked =
+                    !!cfg.enable_ndppd;
+            }
+
+            document
+                .getElementById("netcfg-form")
+                .addEventListener("submit", async (ev) => {
+                    ev.preventDefault();
+                    const status = document.getElementById("netcfg-status");
+                    status.textContent = "Saving...";
+                    const payload = {
+                        bridge: document
+                            .getElementById("cfg-bridge")
+                            .value.trim(),
+                        wan_iface: document
+                            .getElementById("cfg-wan")
+                            .value.trim(),
+                        lan4_cidr: document
+                            .getElementById("cfg-lan4")
+                            .value.trim(),
+                        lan4_gw: document
+                            .getElementById("cfg-lan4gw")
+                            .value.trim(),
+                        ipv6_prefix: document
+                            .getElementById("cfg-v6prefix")
+                            .value.trim(),
+                        nat_backend: document.getElementById("cfg-nat").value,
+                        enable_ndppd:
+                            document.getElementById("cfg-ndppd").checked,
+                    };
+                    try {
+                        await api("/api/network/config", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(payload),
+                        });
+                        await api("/api/network/nat/backend", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                backend: payload.nat_backend,
+                            }),
+                        });
+                        if (payload.enable_ndppd) {
+                            const upstream = prompt(
+                                "Upstream iface for ndppd (e.g., eth0):",
+                                "",
+                            );
+                            await api("/api/network/ndppd", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                    enable: true,
+                                    upstream_iface: upstream || null,
+                                }),
+                            });
+                        } else {
+                            await api("/api/network/ndppd", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ enable: false }),
+                            });
+                        }
+                        status.textContent = "Applied.";
+                    } catch (e) {
+                        console.error(e);
+                        status.textContent = "Failed.";
+                    } finally {
+                        setTimeout(() => (status.textContent = ""), 2500);
+                    }
+                });
+
+            document
+                .getElementById("btn-native")
+                .addEventListener("click", async () => {
+                    const pfx = document
+                        .getElementById("native-prefix")
+                        .value.trim();
+                    if (!pfx) return;
+                    try {
+                        await api("/api/network/ipv6/native", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ ipv6_prefix: pfx }),
+                        });
+                        alert("IPv6 prefix applied.");
+                    } catch (e) {
+                        alert("Failed: " + e);
+                    }
+                });
+
+            document
+                .getElementById("btn-he")
+                .addEventListener("click", async () => {
+                    const payload = {
+                        local_ipv4: document
+                            .getElementById("he-local4")
+                            .value.trim(),
+                        server_ipv4: document
+                            .getElementById("he-server4")
+                            .value.trim(),
+                        client_ipv6: document
+                            .getElementById("he-client6")
+                            .value.trim(),
+                        server_ipv6: document
+                            .getElementById("he-server6")
+                            .value.trim(),
+                        routed_prefix: document
+                            .getElementById("he-prefix")
+                            .value.trim(),
+                    };
+                    try {
+                        await api("/api/network/ipv6/6in4", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(payload),
+                        });
+                        alert("6in4 configured.");
+                    } catch (e) {
+                        alert("Failed: " + e);
+                    }
+                });
+
+            document
+                .getElementById("btn-wg")
+                .addEventListener("click", async () => {
+                    const payload = {
+                        interface: document
+                            .getElementById("wg-if")
+                            .value.trim(),
+                        routed_prefix: document
+                            .getElementById("wg-prefix")
+                            .value.trim(),
+                        config: document.getElementById("wg-conf").value,
+                    };
+                    try {
+                        await api("/api/network/ipv6/wireguard", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(payload),
+                        });
+                        alert("WireGuard configured.");
+                    } catch (e) {
+                        alert("Failed: " + e);
+                    }
+                });
+
+            // Port forwarding
+            document
+                .getElementById("pf-form")
+                .addEventListener("click", async (ev) => {
+                    const btn = ev.target.closest("button[data-action]");
+                    if (!btn) return;
+                    ev.preventDefault();
+                    const name = document
+                        .getElementById("pf-name")
+                        .value.trim();
+                    const protocol = document.getElementById("pf-proto").value;
+                    const host_port = +document.getElementById("pf-host").value;
+                    const ct_port = +document.getElementById("pf-ct").value;
+                    const ct_ip = document
+                        .getElementById("pf-ctip")
+                        .value.trim();
+                    const action = btn.dataset.action;
+                    const status = document.getElementById("pf-status");
+                    status.textContent = "Working...";
+                    try {
+                        await api("/api/network/ports", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                action,
+                                name,
+                                protocol,
+                                host_port,
+                                ct_port,
+                                ct_ip: ct_ip || null,
+                            }),
+                        });
+                        status.textContent = "OK";
+                    } catch (e) {
+                        status.textContent = "Failed";
+                    }
+                    setTimeout(() => (status.textContent = ""), 2000);
+                });
+
+            // IPv6 ACLs
+            document
+                .getElementById("v6acl-form")
+                .addEventListener("click", async (ev) => {
+                    const btn = ev.target.closest("button[data-action]");
+                    if (!btn) return;
+                    ev.preventDefault();
+                    const name = document
+                        .getElementById("v6-name")
+                        .value.trim();
+                    const protocol = document.getElementById("v6-proto").value;
+                    const dport = +document.getElementById("v6-port").value;
+                    const ct_ipv6 = document
+                        .getElementById("v6-addr")
+                        .value.trim();
+                    const action = btn.dataset.action;
+                    const status = document.getElementById("v6-status");
+                    status.textContent = "Working...";
+                    try {
+                        await api("/api/network/ipv6-acl", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                action,
+                                name,
+                                protocol,
+                                dport,
+                                ct_ipv6: ct_ipv6 || null,
+                            }),
+                        });
+                        status.textContent = "OK";
+                    } catch (e) {
+                        status.textContent = "Failed";
+                    }
+                    setTimeout(() => (status.textContent = ""), 2000);
+                });
+
+            document
+                .getElementById("refresh")
+                .addEventListener("click", refreshList);
+            attachListHandlers();
+            refreshList();
+            loadNetCfg();
+
+            // Logs tab handler: clicking "Logs" in container cards opens logs stream.
+            function openLogs(name) {
+                try {
+                    if (ws) ws.close();
+                } catch {}
+                elLogsTitle.textContent = name;
+                elLogs.textContent = "";
+                const proto = location.protocol === "https:" ? "wss" : "ws";
+                ws = new WebSocket(
+                    `${proto}://${location.host}/ws/logs/${encodeURIComponent(name)}`,
+                );
+                ws.onmessage = (ev) => {
+                    elLogs.textContent += ev.data;
+                    elLogs.scrollTop = elLogs.scrollHeight;
+                };
+            }
+        </script>
+    </body>
+</html>

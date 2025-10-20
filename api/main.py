@@ -1,792 +1,828 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
-import subprocess
+import asyncio
+import ipaddress
 import json
 import os
-import pwd
-import grp
-from datetime import datetime
-import asyncio
-import signal
-import time
+import re
+import shutil
+import subprocess
+from pathlib import Path
+from typing import List, Optional, Literal, Dict, Any
 
-app = FastAPI(title="nspawn-ui API", version="1.0.0")
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="CT Manager API", version="0.2.0")
 
-# Data models
-class Container(BaseModel):
-    name: str
-    status: str
-    ipv4: Optional[str] = None
-    ipv6: Optional[str] = None
-    cpu_limit: Optional[str] = None
-    memory_limit: Optional[str] = None
-    storage_limit: Optional[str] = None
-    created_at: Optional[datetime] = None
-    pid: Optional[int] = None
-    ip_address: Optional[str] = None
+# Paths and defaults
+APP_DIR = Path("/opt/ctmgr")
+STATE_DIR = APP_DIR / "state"
+CONFIG_PATH = APP_DIR / "config.json"
+MACHINES_DIR = Path("/var/lib/machines")
+NSPAWN_DIR = Path("/etc/systemd/nspawn")
+WEB_DIR = Path(os.getenv("CTMGR_WEB_DIR", "/opt/ctmgr/web"))
+
+DEFAULT_CONFIG = {
+    "bridge": "br0",
+    "lan4_cidr": "192.168.100.0/24",
+    "lan4_gw": "192.168.100.1",
+    "wan_iface": "",
+    "ipv6_prefix": "",  # example: "2001:db8:abcd:100::/64"
+    "nat_backend": "nftables",  # nftables | iptables
+    "enable_ndppd": False,
+    "ndppd_iface": "",  # upstream iface for proxy, if needed
+}
+
+PORTMAPS_PATH = STATE_DIR / "portmaps.json"       # IPv4 DNAT mappings
+IPV6_ACLS_PATH = STATE_DIR / "ipv6-acls.json"     # IPv6 inbound ACLs
+
+# Ensure dirs exist
+for p in (APP_DIR, STATE_DIR, NSPAWN_DIR, MACHINES_DIR):
+    p.mkdir(parents=True, exist_ok=True)
+
+# Static UI mount (/ui -> index.html)
+if WEB_DIR.exists():
+    app.mount("/ui", StaticFiles(directory=str(WEB_DIR), html=True), name="ui")
+
+
+# ------------------ Utilities ------------------
+
+def run_cmd(cmd: List[str], check: bool = True) -> str:
+    try:
+        res = subprocess.run(cmd, check=check, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return res.stdout
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Command failed: {' '.join(cmd)}\nstdout:\n{e.stdout}\nstderr:\n{e.stderr}")
+
+
+def load_json(path: Path, default):
+    try:
+        if path.exists():
+            return json.loads(path.read_text())
+    except Exception:
+        pass
+    return default
+
+
+def save_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(path)
+
+
+def get_config() -> Dict[str, Any]:
+    cfg = load_json(CONFIG_PATH, DEFAULT_CONFIG)
+    # Backfill defaults for newly added keys
+    for k, v in DEFAULT_CONFIG.items():
+        cfg.setdefault(k, v)
+    return cfg
+
+
+def save_config(cfg: Dict[str, Any]) -> None:
+    save_json(CONFIG_PATH, cfg)
+
+
+def machine_exists(name: str) -> bool:
+    return (MACHINES_DIR / name).exists()
+
+
+def get_container_state(name: str) -> str:
+    try:
+        out = run_cmd(["machinectl", "show", name, "-p", "State"])
+        m = re.search(r"State=(\w+)", out)
+        return m.group(1) if m else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def get_container_ips(name: str) -> List[str]:
+    ips: List[str] = []
+    try:
+        out = run_cmd(["machinectl", "status", name])
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("Address: "):
+                val = line.split("Address: ", 1)[1].strip()
+                if val and val not in ips:
+                    ips.append(val)
+    except Exception:
+        pass
+    return ips
+
+
+def write_nspawn_file(name: str, bridge: str, enable_docker_sock: bool, nested: bool) -> None:
+    lines = []
+    lines.append("[Exec]")
+    if nested:
+        lines.append("PrivateUsers=keep")
+        lines.append("Capability=all")
+    lines.append("")
+    lines.append("[Network]")
+    lines.append(f"Bridge={bridge}")
+    lines.append("")
+    if enable_docker_sock:
+        lines.append("[Files]")
+        lines.append("Bind=/var/run/docker.sock")
+        lines.append("")
+    content = "\n".join(lines) + "\n"
+    (NSPAWN_DIR / f"{name}.nspawn").write_text(content)
+
+
+def debootstrap_container(name: str, distro: str, release: str) -> None:
+    root = MACHINES_DIR / name
+    root.mkdir(parents=True, exist_ok=True)
+    if distro.lower() == "debian":
+        mirror = "http://deb.debian.org/debian"
+    elif distro.lower() == "ubuntu":
+        mirror = "http://ports.ubuntu.com/ubuntu-ports"
+    else:
+        raise RuntimeError("Unsupported distro. Use 'debian' or 'ubuntu'.")
+    run_cmd(["debootstrap", "--arch=amd64", release, str(root), mirror])
+    baseline_container_network(name)
+
+
+def import_tarball_container(name: str, tar_url_or_path: str) -> None:
+    root = MACHINES_DIR / name
+    root.mkdir(parents=True, exist_ok=True)
+    # Support local file or URL
+    if re.match(r"^https?://", tar_url_or_path):
+        tmp = Path("/tmp") / f"{name}.tar"
+        run_cmd(["curl", "-L", "-o", str(tmp), tar_url_or_path])
+        run_cmd(["tar", "-C", str(root), "-xf", str(tmp)])
+        tmp.unlink(missing_ok=True)
+    else:
+        run_cmd(["tar", "-C", str(root), "-xf", tar_url_or_path])
+    baseline_container_network(name)
+
+
+def baseline_container_network(name: str) -> None:
+    root = MACHINES_DIR / name
+    # hostname
+    (root / "etc/hostname").write_text(f"{name}\n")
+    # resolv.conf
+    resolv_src = Path("/etc/resolv.conf")
+    if resolv_src.exists():
+        shutil.copy2(resolv_src, root / "etc/resolv.conf")
+    # networkd DHCPv4 + IPv6 RA
+    network_dir = root / "etc/systemd/network"
+    network_dir.mkdir(parents=True, exist_ok=True)
+    network_conf = """[Match]
+Name=host0
+
+[Network]
+DHCP=yes
+IPv6AcceptRA=yes
+"""
+    (network_dir / "20-host0.network").write_text(network_conf)
+    # Enable services
+    run_cmd(["systemd-nspawn", "-D", str(root), "systemctl", "enable", "systemd-networkd"])
+
+
+def set_root_password(name: str, password: str) -> None:
+    root = MACHINES_DIR / name
+    cmd = [
+        "systemd-nspawn", "-D", str(root), "bash", "-lc",
+        f"echo 'root:{password.replace(\"'\", \"'\\''\")}' | chpasswd",
+    ]
+    run_cmd(cmd)
+
+
+def install_ssh(name: str) -> None:
+    root = MACHINES_DIR / name
+    run_cmd(["systemd-nspawn", "-D", str(root), "bash", "-lc", "apt-get update"])
+    run_cmd(["systemd-nspawn", "-D", str(root), "bash", "-lc", "DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server"])
+    run_cmd([
+        "systemd-nspawn", "-D", str(root), "bash", "-lc",
+        "sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
+    ])
+    run_cmd(["systemd-nspawn", "-D", str(root), "bash", "-lc", "systemctl enable ssh"])
+
+
+def machinectl_action(action: str, name: str) -> None:
+    if action not in ("start", "poweroff", "reboot", "terminate"):
+        raise ValueError("Invalid action")
+    run_cmd(["machinectl", action, name])
+
+
+def enable_autostart(name: str, enabled: bool) -> None:
+    unit = f"systemd-nspawn@{name}.service"
+    if enabled:
+        run_cmd(["systemctl", "enable", unit])
+    else:
+        run_cmd(["systemctl", "disable", unit])
+
+
+def update_container_network_file(name: str, static_ipv4: Optional[str], static_ipv6: Optional[str]) -> None:
+    root = MACHINES_DIR / name
+    net_file = root / "etc/systemd/network/20-host0.network"
+    content = ["[Match]\nName=host0\n\n[Network]"]
+    # IPv4
+    if static_ipv4:
+        ipaddress.IPv4Interface(static_ipv4)  # validate
+        content.append(f"Address={static_ipv4}")
+        content.append("DHCP=no")
+    else:
+        content.append("DHCP=yes")
+    # IPv6
+    if static_ipv6:
+        ipaddress.IPv6Interface(static_ipv6)
+        content.append(f"Address={static_ipv6}")
+        content.append("IPv6AcceptRA=no")
+    else:
+        content.append("IPv6AcceptRA=yes")
+    net_file.write_text("\n".join(content) + "\n")
+
+
+def get_ct_ipv4(name: str) -> Optional[str]:
+    ips = get_container_ips(name)
+    for ip in ips:
+        try:
+            addr = ipaddress.ip_address(ip.split("/")[0]) if "/" in ip else ipaddress.ip_address(ip)
+            if isinstance(addr, ipaddress.IPv4Address):
+                return str(addr)
+        except Exception:
+            continue
+    return None
+
+
+# ------------------ Models ------------------
 
 class CreateContainerRequest(BaseModel):
     name: str
-    distro: str
+    method: Literal["debootstrap", "import"] = "debootstrap"
+    # debootstrap
+    distro: str = "debian"
+    release: str = "bookworm"
+    # tarball import
+    tarball: Optional[str] = None
     root_password: str
-    cpu_limit: Optional[str] = None
-    memory_limit: Optional[str] = None  # in MB
-    storage_limit: Optional[str] = None  # in GB
-    enable_docker: Optional[bool] = False
-    enable_nested: Optional[bool] = False
+    enable_ssh: bool = True
+    enable_docker_sock: bool = False
+    nested: bool = True
+    autostart: bool = False
 
-class StartContainerRequest(BaseModel):
+
+class NetworkUpdateRequest(BaseModel):
+    static_ipv4: Optional[str] = Field(None, description="CIDR, e.g., 192.168.100.10/24")
+    static_ipv6: Optional[str] = Field(None, description="CIDR, e.g., 2001:db8:abcd:100::10/64")
+    bridge: Optional[str] = None
+    restart: bool = False
+
+
+class NATBackendRequest(BaseModel):
+    backend: Literal["iptables", "nftables"]
+
+
+class PortMapRequest(BaseModel):
+    action: Literal["add", "remove"]
     name: str
+    protocol: Literal["tcp", "udp"] = "tcp"
+    host_port: int
+    ct_port: int
+    # Optional override, otherwise we detect ct IPv4
+    ct_ip: Optional[str] = None
 
-class StopContainerRequest(BaseModel):
+
+class IPv6ACLRequest(BaseModel):
+    action: Literal["add", "remove"]
     name: str
+    protocol: Literal["tcp", "udp"] = "tcp"
+    dport: int
+    ct_ipv6: Optional[str] = None
 
-class RestartContainerRequest(BaseModel):
-    name: str
 
-class SSHSetupRequest(BaseModel):
-    name: str
-    ssh_public_key: str
+class IPv6NativeConfig(BaseModel):
+    ipv6_prefix: str  # e.g., 2001:db8:abcd:100::/64
 
-class NetworkConfigRequest(BaseModel):
-    name: str
-    ipv4: Optional[str] = None
-    ipv6: Optional[str] = None
-    enable_nat: Optional[bool] = True
 
-# Connection manager for WebSockets
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-    
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-    
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-    
-    async def send_personal_message(self, message: str, websocket: WebSocket):
-        await websocket.send_text(message)
-    
-    async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            try:
-                await connection.send_text(message)
-            except:
-                pass
+class Setup6in4Request(BaseModel):
+    local_ipv4: str
+    server_ipv4: str
+    client_ipv6: str    # your tunnel endpoint v6
+    server_ipv6: str    # HE server v6
+    routed_prefix: str  # your routed /64 or larger
 
-manager = ConnectionManager()
 
-def run_command(command: List[str], shell=False) -> dict:
-    """Execute a shell command and return result"""
+class SetupWireGuardRequest(BaseModel):
+    interface: str = "wg0"
+    config: str        # full wg-quick config contents
+    routed_prefix: str
+
+
+# ------------------ API: Containers ------------------
+
+@app.get("/api/containers")
+def list_containers():
+    out = run_cmd(["machinectl", "list", "--no-legend", "--no-pager"])
+    containers = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split()
+        name = parts[0]
+        state = get_container_state(name)
+        ips = get_container_ips(name)
+        containers.append({"name": name, "state": state, "ips": ips})
+    return {"containers": containers}
+
+
+@app.post("/api/containers")
+def create_container(req: CreateContainerRequest):
+    name = req.name.strip()
+    if not name or not re.match(r"^[a-zA-Z0-9_.-]+$", name):
+        raise HTTPException(status_code=400, detail="Invalid container name")
+    if machine_exists(name):
+        raise HTTPException(status_code=409, detail="Container already exists")
+
+    cfg = get_config()
     try:
-        if shell:
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
+        if req.method == "debootstrap":
+            debootstrap_container(name, req.distro, req.release)
+        elif req.method == "import":
+            if not req.tarball:
+                raise HTTPException(status_code=400, detail="tarball is required for method=import")
+            import_tarball_container(name, req.tarball)
         else:
-            result = subprocess.run(command, capture_output=True, text=True, check=True)
-        return {
-            "success": True,
-            "output": result.stdout,
-            "error": None
-        }
-    except subprocess.CalledProcessError as e:
-        return {
-            "success": False,
-            "output": e.stdout,
-            "error": e.stderr
-        }
+            raise HTTPException(status_code=400, detail="Unsupported method")
 
-def get_container_ip(container_name: str) -> Optional[str]:
-    """Get the IP address of a container"""
+        write_nspawn_file(name, cfg["bridge"], req.enable_docker_sock, req.nested)
+        set_root_password(name, req.root_password)
+        if req.enable_ssh:
+            install_ssh(name)
+        if req.autostart:
+            enable_autostart(name, True)
+        return {"status": "created", "name": name}
+    except Exception as e:
+        # Cleanup on failure
+        try:
+            shutil.rmtree(MACHINES_DIR / name, ignore_errors=True)
+            f = NSPAWN_DIR / f"{name}.nspawn"
+            if f.exists():
+                f.unlink()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/containers/{name}/start")
+def start_container(name: str):
+    if not machine_exists(name):
+        raise HTTPException(status_code=404, detail="Not found")
     try:
-        # Check if container is running
-        status_result = run_command(["machinectl", "status", container_name], shell=True)
-        if not status_result["success"]:
-            return None
-        
-        # If container is running, try to get IP
-        # This is a more complex operation that would require checking the actual network interfaces
-        # For now, we'll use a simplified approach
-        network_result = run_command([
-            "machinectl", "show", container_name, 
-            "--property=NetworkInterfaces", "--output=cat"
-        ])
-        
-        if network_result["success"]:
-            # In a real implementation, we would parse the actual IP addresses
-            # For now, we'll return a placeholder
-            if "running" in status_result["output"]:
-                return f"10.0.1.{hash(container_name) % 254 + 1}"  # Placeholder IP
-        
-        return None
-    except Exception:
-        return None
+        machinectl_action("start", name)
+        return {"status": "started"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/containers/{name}/stop")
+def stop_container(name: str):
+    if not machine_exists(name):
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        machinectl_action("poweroff", name)
+        return {"status": "stopped"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/containers/{name}/restart")
+def restart_container(name: str):
+    if not machine_exists(name):
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        machinectl_action("reboot", name)
+        return {"status": "restarted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/containers/{name}")
+def delete_container(name: str):
+    if not machine_exists(name):
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        state = get_container_state(name)
+        if state == "running":
+            machinectl_action("poweroff", name)
+        shutil.rmtree(MACHINES_DIR / name, ignore_errors=True)
+        f = NSPAWN_DIR / f"{name}.nspawn"
+        if f.exists():
+            f.unlink()
+        # Also remove autostart symlink
+        try:
+            enable_autostart(name, False)
+        except Exception:
+            pass
+        # Remove any port mappings / ACLs for this CT
+        remove_ct_from_portmaps_and_acls(name)
+        apply_firewall()
+        return {"status": "deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/containers/{name}/ssh/setup")
+def setup_ssh(name: str, req: Dict[str, Optional[str]]):
+    if not machine_exists(name):
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        install_ssh(name)
+        if req and req.get("root_password"):
+            set_root_password(name, req["root_password"] or "")
+        return {"status": "ssh_configured"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/containers/{name}/autostart")
+def set_autostart(name: str, enabled: bool = Body(..., embed=True)):
+    if not machine_exists(name):
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        enable_autostart(name, enabled)
+        return {"status": "ok", "enabled": enabled}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/containers/{name}/network")
+def update_container_network(name: str, req: NetworkUpdateRequest):
+    if not machine_exists(name):
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        if req.bridge:
+            nspawn_file = NSPAWN_DIR / f"{name}.nspawn"
+            if not nspawn_file.exists():
+                write_nspawn_file(name, req.bridge, False, True)
+            else:
+                txt = nspawn_file.read_text()
+                txt = re.sub(r"(?m)^\s*Bridge=.*$", f"Bridge={req.bridge}", txt) if "Bridge=" in txt else txt + f"\n[Network]\nBridge={req.bridge}\n"
+                nspawn_file.write_text(txt)
+        update_container_network_file(name, req.static_ipv4, req.static_ipv6)
+        if req.restart:
+            try:
+                machinectl_action("poweroff", name)
+            except Exception:
+                pass
+            machinectl_action("start", name)
+        return {"status": "updated"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ------------------ API: Networking and Firewall ------------------
+
+@app.get("/api/network/config")
+def get_network_config():
+    cfg = get_config()
+    return cfg
+
+
+@app.post("/api/network/config")
+def set_network_config(cfg_partial: Dict[str, Any]):
+    cfg = get_config()
+    cfg.update({k: v for k, v in cfg_partial.items() if k in DEFAULT_CONFIG})
+    save_config(cfg)
+    # Apply IPv6 RA prefix on br0 if provided
+    if cfg.get("ipv6_prefix"):
+        set_br0_ipv6_prefix(cfg["ipv6_prefix"])
+    return {"status": "ok", "config": cfg}
+
+
+def set_br0_ipv6_prefix(prefix: str):
+    # Configure systemd-networkd RA on br0
+    net = Path("/etc/systemd/network/10-br0.network")
+    text = net.read_text() if net.exists() else "[Match]\nName=br0\n\n[Network]\n"
+    if "IPv6SendRA=" in text:
+        text = re.sub(r"(?m)^IPv6SendRA=.*$", "IPv6SendRA=yes", text)
+    else:
+        text = text.replace("[Network]\n", "[Network]\nIPv6SendRA=yes\n")
+    # Inject or replace [IPv6Prefix]
+    if "[IPv6Prefix]" in text:
+        text = re.sub(r"(?ms)\[IPv6Prefix\].*?Prefix=.*?\n", f"[IPv6Prefix]\nPrefix={prefix}\n", text)
+    else:
+        text += f"\n[IPv6Prefix]\nPrefix={prefix}\n"
+    net.write_text(text)
+    run_cmd(["systemctl", "restart", "systemd-networkd"])
+
+
+@app.post("/api/network/nat/backend")
+def switch_nat_backend(req: NATBackendRequest):
+    cfg = get_config()
+    cfg["nat_backend"] = req.backend
+    save_config(cfg)
+    apply_firewall()
+    return {"status": "ok", "backend": req.backend}
+
+
+@app.post("/api/network/ports")
+def manage_portmap(req: PortMapRequest):
+    if not machine_exists(req.name):
+        raise HTTPException(status_code=404, detail="Container not found")
+    if req.action == "add":
+        # resolve ct_ip if not provided
+        ct_ip = req.ct_ip or get_ct_ipv4(req.name)
+        if not ct_ip:
+            raise HTTPException(status_code=400, detail="Container IPv4 not found; start container or specify ct_ip")
+        # persist
+        maps = load_json(PORTMAPS_PATH, [])
+        # idempotent: remove duplicates
+        maps = [m for m in maps if not (m["protocol"] == req.protocol and m["host_port"] == req.host_port)]
+        maps.append({"name": req.name, "protocol": req.protocol, "host_port": req.host_port, "ct_port": req.ct_port, "ct_ip": ct_ip})
+        save_json(PORTMAPS_PATH, maps)
+    else:
+        maps = load_json(PORTMAPS_PATH, [])
+        maps = [m for m in maps if not (m["protocol"] == req.protocol and m["host_port"] == req.host_port)]
+        save_json(PORTMAPS_PATH, maps)
+    apply_firewall()
+    return {"status": "ok", "portmaps": load_json(PORTMAPS_PATH, [])}
+
+
+@app.post("/api/network/ipv6-acl")
+def manage_ipv6_acl(req: IPv6ACLRequest):
+    if not machine_exists(req.name):
+        raise HTTPException(status_code=404, detail="Container not found")
+    if req.ct_ipv6:
+        try:
+            ipaddress.IPv6Address(req.ct_ipv6)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid ct_ipv6")
+    acls = load_json(IPV6_ACLS_PATH, [])
+    if req.action == "add":
+        if not req.ct_ipv6:
+            # Try to find a v6 address
+            v6 = None
+            for ip in get_container_ips(req.name):
+                try:
+                    addr = ipaddress.ip_address(ip.split("/")[0]) if "/" in ip else ipaddress.ip_address(ip)
+                    if isinstance(addr, ipaddress.IPv6Address):
+                        v6 = str(addr)
+                        break
+                except Exception:
+                    pass
+            if not v6:
+                raise HTTPException(status_code=400, detail="ct_ipv6 not found; specify ct_ipv6 explicitly")
+            req.ct_ipv6 = v6
+        # idempotent
+        acls = [a for a in acls if not (a["protocol"] == req.protocol and a["dport"] == req.dport and a["ct_ipv6"] == req.ct_ipv6)]
+        acls.append({"name": req.name, "protocol": req.protocol, "dport": req.dport, "ct_ipv6": req.ct_ipv6})
+    else:
+        acls = [a for a in acls if not (a["protocol"] == req.protocol and a["dport"] == req.dport and (not req.ct_ipv6 or a["ct_ipv6"] == req.ct_ipv6))]
+    save_json(IPV6_ACLS_PATH, acls)
+    apply_firewall()
+    return {"status": "ok", "ipv6_acls": load_json(IPV6_ACLS_PATH, [])}
+
+
+def current_wan_iface() -> str:
+    cfg = get_config()
+    if cfg.get("wan_iface"):
+        return cfg["wan_iface"]
+    # try detect
+    out = run_cmd(["ip", "route", "show", "default"])
+    m = re.search(r"default via [^ ]+ dev (\S+)", out)
+    if m:
+        cfg["wan_iface"] = m.group(1)
+        save_config(cfg)
+        return cfg["wan_iface"]
+    return ""
+
+
+def apply_firewall():
+    cfg = get_config()
+    if cfg["nat_backend"] == "nftables":
+        render_nft_rules(cfg)
+        # Apply
+        run_cmd(["nft", "-f", "/etc/nftables.d/ctmgr.nft"])
+        # Ensure service enabled
+        run_cmd(["systemctl", "enable", "--now", "ctmgr-nft-apply.service"])
+        # Disable iptables nat unit if exists
+        run_cmd(["systemctl", "disable", "--now", "ctmgr-nat.service"], check=False)
+    else:
+        # iptables: ensure masquerade and DNAT rules
+        ensure_iptables_nat(cfg)
+        # Disable nft apply
+        run_cmd(["systemctl", "disable", "--now", "ctmgr-nft-apply.service"], check=False)
+
+
+def ensure_iptables_nat(cfg: Dict[str, Any]):
+    wan = current_wan_iface()
+    lan = cfg["lan4_cidr"]
+    # Masquerade
+    run_cmd(["iptables", "-t", "nat", "-C", "POSTROUTING", "-s", lan, "-o", wan, "-j", "MASQUERADE"], check=False)
+    if subprocess.call(["iptables", "-t", "nat", "-C", "POSTROUTING", "-s", lan, "-o", wan, "-j", "MASQUERADE"]) != 0:
+        run_cmd(["iptables", "-t", "nat", "-A", "POSTROUTING", "-s", lan, "-o", wan, "-j", "MASQUERADE"])
+    # DNAT port maps
+    maps = load_json(PORTMAPS_PATH, [])
+    for m in maps:
+        rule = ["-t", "nat", "-C", "PREROUTING", "-p", m["protocol"], "--dport", str(m["host_port"]), "-j", "DNAT", "--to-destination", f"{m['ct_ip']}:{m['ct_port']}"]
+        if subprocess.call(["iptables"] + rule) != 0:
+            run_cmd(["iptables", "-t", "nat", "-A", "PREROUTING", "-p", m["protocol"], "--dport", str(m["host_port"]), "-j", "DNAT", "--to-destination", f"{m['ct_ip']}:{m['ct_port']}"])
+        # Accept forward
+        fwd_rule = ["-C", "FORWARD", "-p", m["protocol"], "-d", m["ct_ip"], "--dport", str(m["ct_port"]), "-j", "ACCEPT"]
+        if subprocess.call(["iptables"] + fwd_rule) != 0:
+            run_cmd(["iptables", "-A", "FORWARD", "-p", m["protocol"], "-d", m["ct_ip"], "--dport", str(m["ct_port"]), "-j", "ACCEPT"])
+
+
+def render_nft_rules(cfg: Dict[str, Any]):
+    # Build nftables config with IPv4 NAT and IPv6 ACLs (forward policy drop)
+    wan = current_wan_iface()
+    br = cfg["bridge"]
+    lan4 = ipaddress.ip_network(cfg["lan4_cidr"])
+    maps = load_json(PORTMAPS_PATH, [])
+    acls = load_json(IPV6_ACLS_PATH, [])
+
+    lines = []
+    lines.append("# Autogenerated by CT Manager")
+    lines.append("flush ruleset")
+    lines.append("")
+    lines.append("table inet ctmgr_filter {")
+    lines.append("  chain forward {")
+    lines.append("    type filter hook forward priority 0; policy drop;")
+    lines.append("    ct state established,related accept")
+    # Allow LAN out to WAN and back
+    if wan:
+        lines.append(f"    iifname \"{br}\" oifname \"{wan}\" accept")
+        lines.append(f"    iifname \"{wan}\" oifname \"{br}\" ct state related,established accept")
+    # IPv4 DNAT accept rules
+    for m in maps:
+        proto = m["protocol"]
+        dport = m["ct_port"]
+        ct_ip = m["ct_ip"]
+        lines.append(f"    ip daddr {ct_ip} {proto} dport {dport} accept")
+    # IPv6 inbound ACLs
+    for a in acls:
+        proto = a["protocol"]
+        dport = a["dport"]
+        v6 = a["ct_ipv6"]
+        lines.append(f"    ip6 daddr {v6} {proto} dport {dport} accept")
+    # ICMPv6 is important for PMTU/ND
+    lines.append("    meta l4proto ipv6-icmp accept")
+    lines.append("  }")
+    lines.append("}")
+    lines.append("")
+    lines.append("table ip ctmgr_nat {")
+    lines.append("  chain prerouting { type nat hook prerouting priority -100; }")
+    lines.append("  chain postrouting { type nat hook postrouting priority 100; }")
+    # Masquerade for LAN to WAN
+    if wan:
+        lines.append(f"  chain postrouting {{")
+        lines.append(f"    ip saddr {lan4.with_prefixlen} oifname \"{wan}\" masquerade")
+        lines.append(f"  }}")
+    # DNATs
+    if maps:
+        lines.append("  chain prerouting {")
+        lines.append("    type nat hook prerouting priority -100;")
+        for m in maps:
+            proto = m["protocol"]
+            host_port = m["host_port"]
+            ct_ip = m["ct_ip"]
+            ct_port = m["ct_port"]
+            lines.append(f"    {proto} dport {host_port} dnat to {ct_ip}:{ct_port}")
+        lines.append("  }")
+    lines.append("}")
+    Path("/etc/nftables.d").mkdir(parents=True, exist_ok=True)
+    Path("/etc/nftables.d/ctmgr.nft").write_text("\n".join(lines) + "\n")
+
+
+def remove_ct_from_portmaps_and_acls(name: str):
+    maps = load_json(PORTMAPS_PATH, [])
+    maps = [m for m in maps if m["name"] != name]
+    save_json(PORTMAPS_PATH, maps)
+    acls = load_json(IPV6_ACLS_PATH, [])
+    acls = [a for a in acls if a["name"] != name]
+    save_json(IPV6_ACLS_PATH, acls)
+
+
+# ------------------ API: IPv6 methods ------------------
+
+@app.post("/api/network/ipv6/native")
+def setup_ipv6_native(cfg: IPv6NativeConfig):
+    # Validate prefix
+    ipaddress.IPv6Network(cfg.ipv6_prefix, strict=False)
+    set_br0_ipv6_prefix(cfg.ipv6_prefix)
+    conf = get_config()
+    conf["ipv6_prefix"] = cfg.ipv6_prefix
+    save_config(conf)
+    return {"status": "ok", "ipv6_prefix": cfg.ipv6_prefix}
+
+
+@app.post("/api/network/ipv6/6in4")
+def setup_6in4(req: Setup6in4Request):
+    # Install ifupdown if not present (non-fatal if already installed)
+    run_cmd(["bash", "-lc", "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ifupdown"], check=False)
+    # Write interfaces stanza
+    Path("/etc/network/interfaces.d").mkdir(parents=True, exist_ok=True)
+    text = f"""auto he-ipv6
+iface he-ipv6 inet6 v4tunnel
+  address {req.client_ipv6}
+  netmask 64
+  endpoint {req.server_ipv4}
+  local {req.local_ipv4}
+  ttl 255
+  gateway {req.server_ipv6}
+"""
+    Path("/etc/network/interfaces.d/he-ipv6").write_text(text)
+    # Bring up
+    run_cmd(["ifup", "he-ipv6"])
+    # Route routed prefix to br0
+    run_cmd(["ip", "-6", "route", "replace", req.routed_prefix, "dev", get_config()["bridge"]])
+    # Advertise prefix on br0
+    set_br0_ipv6_prefix(req.routed_prefix)
+    conf = get_config()
+    conf["ipv6_prefix"] = req.routed_prefix
+    save_config(conf)
+    return {"status": "ok"}
+
+
+@app.post("/api/network/ipv6/wireguard")
+def setup_wireguard(req: SetupWireGuardRequest):
+    # Install wireguard
+    run_cmd(["bash", "-lc", "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard"], check=False)
+    Path("/etc/wireguard").mkdir(parents=True, exist_ok=True)
+    conf_path = Path(f"/etc/wireguard/{req.interface}.conf")
+    conf_path.write_text(req.config)
+    run_cmd(["systemctl", "enable", f"wg-quick@{req.interface}"])
+    run_cmd(["systemctl", "restart", f"wg-quick@{req.interface}"])
+    # Route routed prefix to br0
+    run_cmd(["ip", "-6", "route", "replace", req.routed_prefix, "dev", get_config()["bridge"]])
+    # Advertise prefix on br0
+    set_br0_ipv6_prefix(req.routed_prefix)
+    cfg = get_config()
+    cfg["ipv6_prefix"] = req.routed_prefix
+    save_config(cfg)
+    return {"status": "ok"}
+
+
+@app.post("/api/network/ndppd")
+def setup_ndppd(enable: bool = Body(..., embed=True), upstream_iface: Optional[str] = Body(None, embed=True)):
+    # Install ndppd if enabling
+    cfg = get_config()
+    cfg["enable_ndppd"] = enable
+    if upstream_iface:
+        cfg["ndppd_iface"] = upstream_iface
+    save_config(cfg)
+    if enable:
+        run_cmd(["bash", "-lc", "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ndppd"], check=False)
+        br = cfg["bridge"]
+        prefix = cfg.get("ipv6_prefix", "")
+        if not prefix:
+            raise HTTPException(status_code=400, detail="Set ipv6_prefix first")
+        text = f"""proxy {upstream_iface or 'eth0'} {{
+  rule {prefix} {{
+    static
+    iface {br}
+  }}
+}}
+"""
+        Path("/etc/ndppd.conf").write_text(text)
+        run_cmd(["systemctl", "enable", "--now", "ndppd"])
+    else:
+        run_cmd(["systemctl", "disable", "--now", "ndppd"], check=False)
+    return {"status": "ok", "enable_ndppd": enable}
+
+
+# ------------------ Logs and root ------------------
+
+@app.get("/api/containers/{name}/logs")
+def get_logs(name: str, lines: int = 200):
+    if lines < 1 or lines > 5000:
+        lines = 200
+    try:
+        out = run_cmd(["journalctl", "-M", name, "-n", str(lines), "-o", "short-iso"])
+        return JSONResponse({"logs": out})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.websocket("/ws/logs/{name}")
+async def ws_logs(websocket: WebSocket, name: str):
+    await websocket.accept()
+    proc = await asyncio.create_subprocess_exec(
+        "journalctl", "-M", name, "-f", "-n", "50", "-o", "short-iso",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                await asyncio.sleep(0.2)
+                continue
+            await websocket.send_text(line.decode(errors="ignore"))
+    except WebSocketDisconnect:
+        pass
+    finally:
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+
 
 @app.get("/")
-def read_root():
-    return {"message": "nspawn-ui API is running"}
-
-@app.get("/containers", response_model=List[Container])
-def get_containers():
-    """Get list of all containers"""
-    try:
-        # Use machinectl to list containers
-        result = run_command(["machinectl", "list", "--no-legend", "--no-pager"], shell=True)
-        
-        containers = []
-        if result["success"] and result["output"]:
-            for line in result["output"].strip().split('\n'):
-                if line.strip():
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        name = parts[0]
-                        status = parts[1]  # running, stopped, etc.
-                        
-                        # Get additional details with proper error handling
-                        detail_result = run_command([
-                            "machinectl", "show", name, 
-                            "--property=Leader", "--output=cat"
-                        ])
-                        
-                        pid = None
-                        if detail_result["success"]:
-                            try:
-                                # Parse the PID from the output
-                                if detail_result["output"].strip():
-                                    pid_line = detail_result["output"].strip()
-                                    if '=' in pid_line:
-                                        pid = pid_line.split('=')[1]
-                                        pid = int(pid) if pid.isdigit() else None
-                            except:
-                                pass  # If parsing fails, pid remains None
-                        
-                        # Get IP address if available
-                        ip_address = get_container_ip(name)
-                        
-                        container = Container(
-                            name=name,
-                            status=status,
-                            created_at=datetime.now(),
-                            pid=pid,
-                            ip_address=ip_address
-                        )
-                        containers.append(container)
-        else:
-            # If machinectl fails, check the machines directory directly
-            machines_dir = "/var/lib/machines"
-            if os.path.exists(machines_dir):
-                for item in os.listdir(machines_dir):
-                    item_path = os.path.join(machines_dir, item)
-                    if os.path.isdir(item_path):
-                        # Check if container is running
-                        status_result = run_command(["machinectl", "status", item], shell=True)
-                        if status_result["success"] and "running" in status_result["output"]:
-                            status = "running"
-                        else:
-                            status = "stopped"
-                        
-                        container = Container(
-                            name=item,
-                            status=status,
-                            created_at=datetime.now()
-                        )
-                        containers.append(container)
-        
-        return containers
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error listing containers: {str(e)}")
-
-@app.post("/containers")
-def create_container(request: CreateContainerRequest):
-    """Create a new container with specified resources and options"""
-    # Validate inputs
-    if not request.name:
-        raise HTTPException(status_code=400, detail="Container name is required")
-    
-    # Validate name doesn't contain dangerous characters
-    if not request.name.replace('-', '').replace('_', '').isalnum():
-        raise HTTPException(status_code=400, detail="Container name can only contain alphanumeric characters, hyphens, and underscores")
-    
-    # Check if container already exists
-    machines_dir = "/var/lib/machines"
-    container_path = os.path.join(machines_dir, request.name)
-    if os.path.exists(container_path):
-        raise HTTPException(status_code=400, detail="Container already exists")
-    
-    # Determine debootstrap URL based on distro
-    distro_urls = {
-        "bullseye": "http://deb.debian.org/debian",
-        "bookworm": "http://deb.debian.org/debian",
-        "jammy": "http://archive.ubuntu.com/ubuntu",
-        "focal": "http://archive.ubuntu.com/ubuntu",
-        "alma8": "http://repo.almalinux.org/almalinux/8/BaseOS/x86_64/os/",
-        "alma9": "http://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/"
-    }
-    
-    if request.distro not in distro_urls:
-        raise HTTPException(status_code=400, detail=f"Unsupported distribution: {request.distro}")
-    
-    debootstrap_cmd = [
-        "debootstrap",
-        "--variant=minbase"
-    ]
-    
-    # Add arch for some distros
-    if request.distro.startswith("alma"):
-        debootstrap_cmd.extend(["--arch", "amd64"])
-    
-    debootstrap_cmd.extend([
-        request.distro,
-        container_path,
-        distro_urls[request.distro]
-    ])
-    
-    try:
-        # Create base container with debootstrap
-        result = run_command(debootstrap_cmd)
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=f"Failed to create container: {result['error']}")
-        
-        # Set up root password
-        setup_password_cmd = [
-            "chroot", container_path,
-            "/bin/bash", "-c", f"echo 'root:{request.root_password}' | chpasswd"
-        ]
-        
-        password_result = run_command(setup_password_cmd)
-        if not password_result["success"]:
-            raise HTTPException(status_code=500, detail=f"Failed to set password: {password_result['error']}")
-        
-        # Set up basic networking
-        setup_network_cmd = [
-            "chroot", container_path,
-            "/bin/bash", "-c", 
-            "echo 'nameserver 8.8.8.8' > /etc/resolv.conf && "
-            "echo 'nameserver 8.8.4.4' >> /etc/resolv.conf && "
-            "echo '127.0.0.1 localhost' > /etc/hosts && "
-            f"echo '127.0.0.1 {request.name}' >> /etc/hosts"
-        ]
-        
-        net_result = run_command(setup_network_cmd)
-        if not net_result["success"]:
-            # Non-critical error, continue anyway
-            print(f"Warning: Network setup failed: {net_result['error']}")
-        
-        # Set up systemd-nspawn configuration with advanced options
-        config_created = False
-        additional_setup = []
-        
-        if request.cpu_limit or request.memory_limit or request.storage_limit or request.enable_docker or request.enable_nested:
-            nspawn_config_dir = "/etc/systemd/nspawn"
-            os.makedirs(nspawn_config_dir, exist_ok=True)
-            
-            config_path = os.path.join(nspawn_config_dir, f"{request.name}.nspawn")
-            with open(config_path, 'w') as f:
-                f.write(f"# Configuration for container {request.name}\n")
-                
-                # Handle Docker-in-CT
-                if request.enable_docker:
-                    f.write(f"\n[Exec]\n")
-                    f.write(f"Boot=false\n")  # Don't boot init system for Docker containers
-                    f.write(f"User=root\n")
-                    
-                    f.write(f"\n[Files]\n")
-                    f.write(f"Bind=/var/lib/docker\n")  # Mount Docker data directory
-                    f.write(f"Bind=/var/run/docker.sock:/var/run/docker.sock\n")  # Mount Docker socket
-                
-                # Handle nested containers
-                if request.enable_nested:
-                    f.write(f"\n[Security]\n")
-                    f.write(f"PrivateUsers=false\n")  # Enable user namespace sharing
-                    f.write(f"Capability=all\n")  # Grant all capabilities
-                    f.write(f"NoNewPrivileges=false\n")  # Allow privilege escalation
-                
-                # Handle resource limits
-                if request.cpu_limit or request.memory_limit or request.storage_limit:
-                    f.write(f"\n[Resources]\n")
-                    if request.cpu_limit:
-                        f.write(f"CPUQuota={request.cpu_limit}\n")
-                    if request.memory_limit:
-                        f.write(f"MemoryMax={request.memory_limit}M\n")
-                    if request.storage_limit:
-                        # Note: Storage limits require system-level configuration
-                        f.write(f"LimitNOFILE=1048576\n")  # Increase file descriptor limit
-                
-                # Network configuration for containers
-                f.write(f"\n[Network]\n")
-                f.write(f"VirtualEthernet=true\n")  # Create virtual ethernet interface
-                
-                additional_setup.append(f"Docker support: {'enabled' if request.enable_docker else 'disabled'}")
-                additional_setup.append(f"Nested containers: {'enabled' if request.enable_nested else 'disabled'}")
-            
-            config_created = True
-        
-        # If Docker is enabled, install Docker inside the container
-        if request.enable_docker:
-            install_docker_cmd = [
-                "chroot", container_path,
-                "/bin/bash", "-c", 
-                "if command -v apt-get >/dev/null 2>&1; then "
-                "apt-get update > /dev/null 2>&1 && apt-get install -y curl gnupg lxc iptables > /dev/null 2>&1 && "
-                "curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg && "
-                'echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list && '
-                "apt-get update > /dev/null 2>&1 && apt-get install -y docker-ce docker-ce-cli containerd.io > /dev/null 2>&1 && "
-                "systemctl enable docker > /dev/null 2>&1 || true; "
-                "elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then "
-                "dnf install -y yum-utils curl > /dev/null 2>&1 || yum install -y yum-utils curl > /dev/null 2>&1 && "
-                "yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo > /dev/null 2>&1 && "
-                "dnf install -y docker-ce docker-ce-cli containerd.io > /dev/null 2>&1 || yum install -y docker-ce docker-ce-cli containerd.io > /dev/null 2>&1 && "
-                "systemctl enable docker > /dev/null 2>&1 || true; "
-                "fi"
-            ]
-            
-            docker_result = run_command(install_docker_cmd)
-            if docker_result["success"]:
-                additional_setup.append("Docker installed in container")
-            else:
-                additional_setup.append(f"Docker installation may have failed: {docker_result['error']}")
-        
-        return {
-            "success": True,
-            "message": f"Container {request.name} created successfully",
-            "details": {
-                "config_created": config_created,
-                "additional_setup": additional_setup
-            },
-            "container": Container(
-                name=request.name,
-                status="stopped",
-                created_at=datetime.now()
-            )
-        }
-    except Exception as e:
-        # Clean up on failure
-        try:
-            if os.path.exists(container_path):
-                run_command(["rm", "-rf", container_path], shell=True)
-            
-            # Remove config file if created
-            config_path = f"/etc/systemd/nspawn/{request.name}.nspawn"
-            if os.path.exists(config_path):
-                os.remove(config_path)
-        except:
-            pass  # Best effort cleanup
-        
-        raise HTTPException(status_code=500, detail=f"Error creating container: {str(e)}")
-
-@app.post("/containers/start")
-def start_container(request: StartContainerRequest):
-    """Start a container"""
-    if not request.name:
-        raise HTTPException(status_code=400, detail="Container name is required")
-    
-    # Validate container name
-    if not request.name.replace('-', '').replace('_', '').isalnum():
-        raise HTTPException(status_code=400, detail="Invalid container name")
-    
-    command = ["machinectl", "start", request.name]
-    result = run_command(command)
-    
-    if result["success"]:
-        return {
-            "success": True,
-            "message": f"Container {request.name} started successfully"
-        }
-    else:
-        raise HTTPException(status_code=500, detail=f"Failed to start container: {result['error']}")
-
-@app.post("/containers/stop")
-def stop_container(request: StopContainerRequest):
-    """Stop a container"""
-    if not request.name:
-        raise HTTPException(status_code=400, detail="Container name is required")
-    
-    # Validate container name
-    if not request.name.replace('-', '').replace('_', '').isalnum():
-        raise HTTPException(status_code=400, detail="Invalid container name")
-    
-    command = ["machinectl", "stop", request.name]
-    result = run_command(command)
-    
-    if result["success"]:
-        return {
-            "success": True,
-            "message": f"Container {request.name} stopped successfully"
-        }
-    else:
-        raise HTTPException(status_code=500, detail=f"Failed to stop container: {result['error']}")
-
-@app.post("/containers/restart")
-def restart_container(request: RestartContainerRequest):
-    """Restart a container"""
-    if not request.name:
-        raise HTTPException(status_code=400, detail="Container name is required")
-    
-    # Validate container name
-    if not request.name.replace('-', '').replace('_', '').isalnum():
-        raise HTTPException(status_code=400, detail="Invalid container name")
-    
-    # First stop the container
-    stop_result = run_command(["machinectl", "stop", request.name])
-    if not stop_result["success"]:
-        # Continue anyway, as container might not be running
-        pass
-    
-    # Wait a moment
-    time.sleep(1)
-    
-    # Then start it again
-    start_result = run_command(["machinectl", "start", request.name])
-    if start_result["success"]:
-        return {
-            "success": True,
-            "message": f"Container {request.name} restarted successfully"
-        }
-    else:
-        raise HTTPException(status_code=500, detail=f"Failed to restart container: {start_result['error']}")
-
-@app.delete("/containers/{name}")
-def remove_container(name: str):
-    """Remove a container"""
-    if not name:
-        raise HTTPException(status_code=400, detail="Container name is required")
-    
-    # Validate container name
-    if not name.replace('-', '').replace('_', '').isalnum():
-        raise HTTPException(status_code=400, detail="Invalid container name")
-    
-    # Stop container first if running
-    containers_result = run_command(["machinectl", "list", "--no-legend", "--no-pager"], shell=True)
-    if containers_result["success"]:
-        # Check if the container is running
-        list_lines = containers_result["output"].strip().split('\n')
-        for line in list_lines:
-            if name in line and "running" in line:
-                # Stop the container
-                stop_result = run_command(["machinectl", "stop", name])
-                if not stop_result["success"]:
-                    print(f"Warning: Could not stop container before removal: {stop_result['error']}")
-                break
-    
-    # Remove the container
-    command = ["machinectl", "remove", name]
-    result = run_command(command)
-    
-    if result["success"]:
-        # Remove config file if it exists
-        config_path = f"/etc/systemd/nspawn/{name}.nspawn"
-        if os.path.exists(config_path):
-            try:
-                os.remove(config_path)
-            except:
-                pass  # Best effort
-        
-        return {
-            "success": True,
-            "message": f"Container {name} removed successfully"
-        }
-    else:
-        raise HTTPException(status_code=500, detail=f"Failed to remove container: {result['error']}")
-
-@app.get("/containers/{name}/logs")
-def get_container_logs(name: str):
-    """Get container logs"""
-    if not name:
-        raise HTTPException(status_code=400, detail="Container name is required")
-    
-    # Validate container name
-    if not name.replace('-', '').replace('_', '').isalnum():
-        raise HTTPException(status_code=400, detail="Invalid container name")
-    
-    # Try to get logs from journalctl first
-    command = ["journalctl", "-u", f"systemd-nspawn@{name}", "-n", "100", "--no-pager"]
-    result = run_command(command)
-    
-    if result["success"]:
-        return {
-            "container": name,
-            "logs": result["output"]
-        }
-    else:
-        # If systemd service logs are not available, try alternate method
-        # Check if container exists and get status
-        status_result = run_command(["machinectl", "status", name], shell=True)
-        
-        if status_result["success"]:
-            return {
-                "container": name,
-                "logs": status_result["output"]
-            }
-        else:
-            # If container doesn't exist or we can't get status, try to read container files
-            container_path = f"/var/lib/machines/{name}"
-            if os.path.exists(container_path):
-                # This would be a more complex implementation to read container-specific logs
-                return {
-                    "container": name,
-                    "logs": f"Container {name} exists but no detailed logs available via journalctl"
-                }
-            else:
-                raise HTTPException(status_code=404, detail=f"Container {name} not found")
-
-@app.post("/containers/{name}/ssh")
-def setup_ssh(request: SSHSetupRequest):
-    """Set up SSH access for a container"""
-    if not request.name.replace('-', '').replace('_', '').isalnum():
-        raise HTTPException(status_code=400, detail="Invalid container name")
-    
-    container_path = f"/var/lib/machines/{request.name}"
-    
-    if not os.path.exists(container_path):
-        raise HTTPException(status_code=404, detail="Container not found")
-    
-    try:
-        # Validate SSH public key format
-        if not is_valid_ssh_key(request.ssh_public_key):
-            raise HTTPException(status_code=400, detail="Invalid SSH public key format")
-        
-        # Create .ssh directory in container
-        mkdir_cmd = ["chroot", container_path, "/bin/mkdir", "-p", "/root/.ssh"]
-        mkdir_result = run_command(mkdir_cmd)
-        if not mkdir_result["success"]:
-            raise HTTPException(status_code=500, detail="Failed to create .ssh directory")
-        
-        # Write the public key to authorized_keys
-        auth_keys_path = os.path.join(container_path, "root/.ssh/authorized_keys")
-        with open(auth_keys_path, 'w') as f:
-            f.write(request.ssh_public_key.strip() + "\n")
-        
-        # Set proper permissions
-        chmod_cmd = ["chroot", container_path, "/bin/chmod", "700", "/root/.ssh"]
-        chown_cmd = ["chroot", container_path, "/bin/chown", "root:root", "/root/.ssh"]
-        chmod_file_cmd = ["chroot", container_path, "/bin/chmod", "600", "/root/.ssh/authorized_keys"]
-        chown_file_cmd = ["chroot", container_path, "/bin/chown", "root:root", "/root/.ssh/authorized_keys"]
-        
-        for cmd in [chmod_cmd, chown_cmd, chmod_file_cmd, chown_file_cmd]:
-            result = run_command(cmd)
-            if not result["success"]:
-                print(f"Warning: Failed to set permissions: {result['error']}")
-        
-        # Install and configure SSH server in container if needed
-        install_ssh_cmd = [
-            "chroot", container_path,
-            "/bin/bash", "-c", 
-            "if command -v apt-get >/dev/null 2>&1; then "
-            "apt-get update > /dev/null 2>&1 && apt-get install -y openssh-server > /dev/null 2>&1 && "
-            "mkdir -p /run/sshd && "
-            "sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && "
-            "sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && "
-            "systemctl enable ssh > /dev/null 2>&1 || true; "
-            "elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then "
-            "dnf install -y openssh-server > /dev/null 2>&1 || yum install -y openssh-server > /dev/null 2>&1 && "
-            "systemctl enable sshd > /dev/null 2>&1 || true && "
-            "sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && "
-            "sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config; "
-            "elif command -v pacman >/dev/null 2>&1; then "
-            "pacman -S --noconfirm openssh > /dev/null 2>&1 && "
-            "systemctl enable sshd > /dev/null 2>&1 || true && "
-            "sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && "
-            "sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config; "
-            "fi"
-        ]
-        
-        ssh_result = run_command(install_ssh_cmd)
-        if not ssh_result["success"]:
-            print(f"Warning: Could not install/configure SSH: {ssh_result['error']}")
-        
-        # Try to restart SSH if container is running
-        status_result = run_command(["machinectl", "status", request.name], shell=True)
-        if status_result["success"] and "running" in status_result["output"]:
-            # Try to restart SSH inside the running container
-            restart_ssh_cmd = [
-                "machinectl", "exec", request.name,
-                "/bin/bash", "-c", 
-                "systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true"
-            ]
-            run_command(restart_ssh_cmd)
-        
-        return {
-            "success": True,
-            "message": f"SSH setup completed for container {request.name}",
-            "details": {
-                "container": request.name,
-                "ssh_configured": True,
-                "public_key_added": True
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to set up SSH: {str(e)}")
-
-def is_valid_ssh_key(key_str: str) -> bool:
-    """Validate if the provided string is a valid SSH public key"""
-    import re
-    
-    # Remove any extra whitespace
-    key_str = key_str.strip()
-    
-    # SSH keys typically start with the type (ssh-rsa, ssh-dss, ssh-ed25519, ecdsa-sha2-nistp256, etc.)
-    # and have the format: <type> <base64_key> [comment]
-    if not key_str:
-        return False
-    
-    # Split the key into parts
-    parts = key_str.split()
-    if len(parts) < 2:  # Need at least type and key
-        return False
-    
-    key_type = parts[0]
-    key_data = parts[1]
-    
-    # Check if key type is valid
-    valid_types = ["ssh-rsa", "ssh-dss", "ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521"]
-    if key_type not in valid_types:
-        return False
-    
-    # Check if key data is valid base64
-    import base64
-    try:
-        base64.b64decode(key_data)
-    except Exception:
-        return False
-    
-    return True
-
-@app.post("/containers/{name}/network")
-def configure_network(request: NetworkConfigRequest):
-    """Configure networking for a container"""
-    if not request.name.replace('-', '').replace('_', '').isalnum():
-        raise HTTPException(status_code=400, detail="Invalid container name")
-    
-    container_path = f"/var/lib/machines/{request.name}"
-    if not os.path.exists(container_path):
-        raise HTTPException(status_code=404, detail="Container not found")
-    
-    try:
-        # Create systemd-networkd configuration for this container
-        network_config_dir = "/etc/systemd/network"
-        os.makedirs(network_config_dir, exist_ok=True)
-        
-        # Create a network file for the container
-        network_file = f"/var/lib/machines/{request.name}.network"
-        
-        with open(network_file, 'w') as f:
-            f.write(f"# Network configuration for {request.name}\n")
-            f.write("[Match]\n")
-            f.write(f"Virtualization=container\n")
-            f.write("\n[Network]\n")
-            
-            if request.ipv4:
-                f.write(f"Address={request.ipv4}\n")
-                f.write("Gateway=10.0.0.1\n")  # This would need to be configurable
-                f.write("DNS=8.8.8.8\n")
-            
-            if request.ipv6:
-                f.write(f"Address={request.ipv6}\n")
-                f.write("IPv6AcceptRA=yes\n")
-            
-            if request.enable_nat:
-                # Enable IP forwarding for NAT
-                f.write("IPForward=ipv4\n")
-        
-        # If the container is running, we need to restart it for changes to take effect
-        status_result = run_command(["machinectl", "status", request.name], shell=True)
-        if status_result["success"] and "running" in status_result["output"]:
-            # Restart the container to apply network changes
-            restart_result = run_command(["machinectl", "restart", request.name])
-            if not restart_result["success"]:
-                print(f"Warning: Could not restart container after network config: {restart_result['error']}")
-        
-        network_config = []
-        if request.ipv4:
-            network_config.append(f"IPv4: {request.ipv4}")
-        if request.ipv6:
-            network_config.append(f"IPv6: {request.ipv6}")
-        
-        return {
-            "success": True,
-            "message": f"Network configuration updated for container {request.name}",
-            "config": network_config
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to configure network: {str(e)}")
-
-@app.websocket("/ws/logs/{container_name}")
-async def websocket_logs(websocket: WebSocket, container_name: str):
-    """WebSocket endpoint for real-time container logs"""
-    await manager.connect(websocket)
-    try:
-        # Verify that container exists
-        containers_result = run_command(["machinectl", "list", "--no-legend", "--no-pager"], shell=True)
-        if containers_result["success"]:
-            container_exists = any(container_name in line for line in containers_result["output"].split('\n') if line.strip())
-            if not container_exists:
-                await manager.send_personal_message(f"Error: Container {container_name} not found", websocket)
-                return
-        
-        # Try to get live logs using journalctl with follow
-        import threading
-        import time
-        
-        def follow_logs():
-            try:
-                # Use journalctl to follow logs in real-time
-                process = subprocess.Popen([
-                    "journalctl", "-u", f"systemd-nspawn@{container_name}", 
-                    "-f", "--no-pager", "--output=cat"
-                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                
-                while True:
-                    if websocket.client_state.value != 3:  # WebSocket.CONNECTING = 3
-                        # Check if WebSocket is closed
-                        break
-                        
-                    line = process.stdout.readline()
-                    if not line:
-                        break
-                    
-                    # Send the log line to the WebSocket client
-                    try:
-                        asyncio.run(websocket.send_text(line.strip()))
-                    except:
-                        break  # Connection closed, exit loop
-                    
-                    time.sleep(0.1)  # Small delay to prevent overwhelming
-            except Exception as e:
-                try:
-                    asyncio.run(websocket.send_text(f"Error streaming logs: {str(e)}"))
-                except:
-                    pass
-        
-        # Start the log following in a separate thread
-        log_thread = threading.Thread(target=follow_logs, daemon=True)
-        log_thread.start()
-        
-        # Keep the WebSocket connection alive
-        while True:
-            try:
-                # Wait for messages from client (though we don't really expect any)
-                data = await websocket.receive_text()
-            except:
-                break  # Connection closed
-                
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
-    finally:
-        # Clean up when disconnecting
-        pass
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+def root_redirect():
+    index_path = WEB_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+    return {"message": "CT Manager API is running. UI not found."}

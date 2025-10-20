@@ -1,8 +1,0 @@
-# API requirements
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pydantic==2.5.0
-python-multipart==0.0.6
-
-# System management (for container utilities)
-systemd-python==235  # This is optional and may not be needed for basic operations
