@@ -1631,12 +1631,12 @@ ExecStart=/bin/bash -c '/usr/sbin/ip link add br0 type bridge && /usr/sbin/ip li
 ExecStart=/bin/bash -c 'echo 1 > /proc/sys/net/ipv4/ip_forward && echo 1 > /proc/sys/net/ipv6/conf/all/forwarding'
 
 # Enable NAT
-ExecStart=/bin/bash -c 'iptables -t nat -A POSTROUTING -o \$(ip route | grep default | awk "{print \$5}" | head -n 1) -j MASQUERADE && iptables -A FORWARD -i br0 -o \$(ip route | grep default | awk "{print \$5}" | head -n 1) -j ACCEPT && iptables -A FORWARD -i \$(ip route | grep default | awk "{print \$5}" | head -n 1) -o br0 -j ACCEPT'
+ExecStart=/bin/bash -c 'DEFAULT_IFACE=$(ip route show default | awk '\''{for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}'\''); if [[ -z "$DEFAULT_IFACE" ]]; then echo "No default interface found; skipping NAT configuration" >&2; exit 0; fi; iptables -t nat -A POSTROUTING -o "$DEFAULT_IFACE" -j MASQUERADE && iptables -A FORWARD -i br0 -o "$DEFAULT_IFACE" -j ACCEPT && iptables -A FORWARD -i "$DEFAULT_IFACE" -o br0 -j ACCEPT'
 
 # Save iptables rules
 ExecStart=/bin/bash -c 'iptables-save > /etc/iptables/rules.v4 2>/dev/null || true'
 
-ExecStop=/bin/bash -c 'iptables -t nat -D POSTROUTING -o \$(ip route | grep default | awk "{print \$5}" | head -n 1) -j MASQUERADE 2>/dev/null || true && iptables -D FORWARD -i br0 -o \$(ip route | grep default | awk "{print \$5}" | head -n 1) -j ACCEPT 2>/dev/null || true && iptables -D FORWARD -i \$(ip route | grep default | awk "{print \$5}" | head -n 1) -o br0 -j ACCEPT 2>/dev/null || true && /usr/sbin/ip link set br0 down && /usr/sbin/ip link delete br0 2>/dev/null || true'
+ExecStop=/bin/bash -c 'DEFAULT_IFACE=$(ip route show default | awk '\''{for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}'\''); iptables -t nat -D POSTROUTING -o "$DEFAULT_IFACE" -j MASQUERADE 2>/dev/null || true && iptables -D FORWARD -i br0 -o "$DEFAULT_IFACE" -j ACCEPT 2>/dev/null || true && iptables -D FORWARD -i "$DEFAULT_IFACE" -o br0 -j ACCEPT 2>/dev/null || true && /usr/sbin/ip link set br0 down 2>/dev/null || true && /usr/sbin/ip link delete br0 2>/dev/null || true'
 
 [Install]
 WantedBy=network.target
