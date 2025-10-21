@@ -1563,7 +1563,7 @@ WantedBy=multi-user.target
 EOF
 
     # Create the network bridge service
-    cat > "$SYSTEMD_SERVICE_DIR/nspawn-bridge.service" << EOF
+    cat > "$SYSTEMD_SERVICE_DIR/nspawn-bridge.service" << 'EOF'
 [Unit]
 Description=Network Bridge for nspawn-vps
 After=network-pre.target
