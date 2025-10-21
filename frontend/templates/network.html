@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network - ZenithStack</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- Navigation Bar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand fw-bold" href="/">
+                <i class="bi bi-layers"></i> ZenithStack
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">
+                            <i class="bi bi-speedometer2"></i> Dashboard
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/vps/create">
+                            <i class="bi bi-plus-circle"></i> Create VPS
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/network">
+                            <i class="bi bi-diagram-3"></i> Network
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/settings">
+                            <i class="bi bi-gear"></i> Settings
+                        </a>
+                    </li>
+                </ul>
+                <div class="d-flex align-items-center">
+                    <span class="text-white me-3">
+                        <i class="bi bi-person-circle"></i> <span id="username">Admin</span>
+                    </span>
+                    <button class="btn btn-outline-light btn-sm" id="logoutBtn">
+                        <i class="bi bi-box-arrow-right"></i> Logout
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-12">
+                <h2><i class="bi bi-diagram-3"></i> Network Configuration</h2>
+                <p class="text-muted">Manage network settings and port forwarding rules</p>
+            </div>
+        </div>
+
+        <!-- Bridge Status -->
+        <div class="row mt-4">
+            <div class="col-md-6">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0"><i class="bi bi-hdd-network"></i> Bridge Status</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="bridgeStatus">
+                            <div class="text-center py-3">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-info text-white">
+                        <h5 class="mb-0"><i class="bi bi-globe"></i> IPv6 Configuration</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label class="form-label">IPv6 Mode</label>
+                            <select class="form-select" id="ipv6Mode">
+                                <option value="disabled">Disabled</option>
+                                <option value="native">Native IPv6</option>
+                                <option value="6in4">6in4 Tunnel</option>
+                                <option value="wireguard">WireGuard VPN</option>
+                            </select>
+                        </div>
+                        <div id="ipv6Details" class="d-none">
+                            <div class="alert alert-info">
+                                <small>IPv6 configuration details will appear here</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- NAT Rules -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-arrow-left-right"></i> NAT & Port Forwarding Rules</h5>
+                        <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addRuleModal">
+                            <i class="bi bi-plus-circle"></i> Add Rule
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>Host Port</th>
+                                        <th>Container</th>
+                                        <th>Container Port</th>
+                                        <th>Protocol</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="natRulesTable">
+                                    <tr>
+                                        <td colspan="5" class="text-center py-3">
+                                            <i class="bi bi-inbox" style="font-size: 2rem; color: #ddd;"></i>
+                                            <p class="mt-2 text-muted">No port forwarding rules configured</p>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Rule Modal -->
+    <div class="modal fade" id="addRuleModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Add Port Forwarding Rule</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="addRuleForm">
+                        <div class="mb-3">
+                            <label for="hostPort" class="form-label">Host Port</label>
+                            <input type="number" class="form-control" id="hostPort" required min="1" max="65535">
+                        </div>
+                        <div class="mb-3">
+                            <label for="containerSelect" class="form-label">Container</label>
+                            <select class="form-select" id="containerSelect" required>
+                                <option value="">Select a container...</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label for="containerPort" class="form-label">Container Port</label>
+                            <input type="number" class="form-control" id="containerPort" required min="1" max="65535">
+                        </div>
+                        <div class="mb-3">
+                            <label for="protocol" class="form-label">Protocol</label>
+                            <select class="form-select" id="protocol">
+                                <option value="tcp">TCP</option>
+                                <option value="udp">UDP</option>
+                            </select>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="saveRuleBtn">Add Rule</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/network.js"></script>
+</body>
+</html>

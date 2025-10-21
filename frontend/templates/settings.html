@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - ZenithStack</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- Navigation Bar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand fw-bold" href="/">
+                <i class="bi bi-layers"></i> ZenithStack
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">
+                            <i class="bi bi-speedometer2"></i> Dashboard
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/vps/create">
+                            <i class="bi bi-plus-circle"></i> Create VPS
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/network">
+                            <i class="bi bi-diagram-3"></i> Network
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/settings">
+                            <i class="bi bi-gear"></i> Settings
+                        </a>
+                    </li>
+                </ul>
+                <div class="d-flex align-items-center">
+                    <span class="text-white me-3">
+                        <i class="bi bi-person-circle"></i> <span id="username">Admin</span>
+                    </span>
+                    <button class="btn btn-outline-light btn-sm" id="logoutBtn">
+                        <i class="bi bi-box-arrow-right"></i> Logout
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-12">
+                <h2><i class="bi bi-gear"></i> Settings</h2>
+                <p class="text-muted">Configure system settings and preferences</p>
+            </div>
+        </div>
+
+        <!-- System Information -->
+        <div class="row mt-4">
+            <div class="col-md-6">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0"><i class="bi bi-info-circle"></i> System Information</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="systemInfo">
+                            <div class="text-center py-3">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-success text-white">
+                        <h5 class="mb-0"><i class="bi bi-hdd"></i> Storage Information</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="storageInfo">
+                            <div class="text-center py-3">
+                                <div class="spinner-border text-success" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- User Settings -->
+        <div class="row mt-4">
+            <div class="col-md-6">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-warning text-dark">
+                        <h5 class="mb-0"><i class="bi bi-person"></i> User Settings</h5>
+                    </div>
+                    <div class="card-body">
+                        <form id="userSettingsForm">
+                            <div class="mb-3">
+                                <label for="currentUsername" class="form-label">Username</label>
+                                <input type="text" class="form-control" id="currentUsername" disabled>
+                            </div>
+                            <div class="mb-3">
+                                <label for="currentPassword" class="form-label">Current Password</label>
+                                <input type="password" class="form-control" id="currentPassword">
+                            </div>
+                            <div class="mb-3">
+                                <label for="newPassword" class="form-label">New Password</label>
+                                <input type="password" class="form-control" id="newPassword">
+                            </div>
+                            <div class="mb-3">
+                                <label for="confirmPassword" class="form-label">Confirm New Password</label>
+                                <input type="password" class="form-control" id="confirmPassword">
+                            </div>
+                            <button type="submit" class="btn btn-primary">
+                                <i class="bi bi-save"></i> Update Password
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-info text-white">
+                        <h5 class="mb-0"><i class="bi bi-sliders"></i> System Preferences</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label class="form-label">Default CPU Quota</label>
+                            <input type="number" class="form-control" id="defaultCpuQuota" value="100" min="25" max="400">
+                            <small class="text-muted">Default CPU quota for new containers (100% = 1 core)</small>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Default Memory (MB)</label>
+                            <input type="number" class="form-control" id="defaultMemory" value="512" min="256" max="8192">
+                            <small class="text-muted">Default memory allocation for new containers</small>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Default Disk (GB)</label>
+                            <input type="number" class="form-control" id="defaultDisk" value="10" min="5" max="100">
+                            <small class="text-muted">Default disk quota for new containers</small>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="autoStartContainers" checked>
+                                <label class="form-check-label" for="autoStartContainers">
+                                    Auto-start containers on boot
+                                </label>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-primary" id="savePreferencesBtn">
+                            <i class="bi bi-save"></i> Save Preferences
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Advanced Settings -->
+        <div class="row mt-4 mb-4">
+            <div class="col-12">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-danger text-white">
+                        <h5 class="mb-0"><i class="bi bi-exclamation-triangle"></i> Advanced Settings</h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted">These settings can affect system stability. Use with caution.</p>
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <button type="button" class="btn btn-outline-warning w-100" id="refreshDistrosBtn">
+                                    <i class="bi bi-arrow-clockwise"></i> Refresh Distribution Templates
+                                </button>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <button type="button" class="btn btn-outline-danger w-100" id="clearLogsBtn">
+                                    <i class="bi bi-trash"></i> Clear System Logs
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/settings.js"></script>
+</body>
+</html>

@@ -31,12 +31,12 @@
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="#">
+                        <a class="nav-link" href="/network">
                             <i class="bi bi-diagram-3"></i> Network
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="#">
+                        <a class="nav-link" href="/settings">
                             <i class="bi bi-gear"></i> Settings
                         </a>
                     </li>
@@ -171,6 +171,28 @@
                                     <div class="form-text">Assign a globally routable IPv6 address</div>
                                 </div>
 
+                                <div class="mb-3" id="ipv6ModeGroup" style="display: none;">
+                                    <label for="ipv6Mode" class="form-label">IPv6 Configuration Mode</label>
+                                    <select class="form-select" id="ipv6Mode">
+                                        <option value="native">Native IPv6</option>
+                                        <option value="6in4">6in4 Tunnel</option>
+                                        <option value="wireguard">WireGuard VPN</option>
+                                    </select>
+                                </div>
+
+                                <div class="mb-3" id="wireguardConfigGroup" style="display: none;">
+                                    <label for="wireguardConfig" class="form-label">WireGuard Configuration</label>
+                                    <textarea class="form-control" id="wireguardConfig" rows="10" placeholder="[Interface]
+PrivateKey = ...
+Address = ...
+
+[Peer]
+PublicKey = ...
+Endpoint = ...
+AllowedIPs = ..."></textarea>
+                                    <div class="form-text">Enter your WireGuard configuration here</div>
+                                </div>
+
                                 <div class="alert alert-info">
                                     <i class="bi bi-info-circle"></i> 
                                     DNS servers (8.8.8.8, 1.1.1.1) will be automatically configured
@@ -183,6 +205,24 @@
                                     <button type="submit" class="btn btn-success" id="createBtn">
                                         <i class="bi bi-plus-circle"></i> Create VPS
                                     </button>
+                                </div>
+
+                                <!-- Creation Status Display -->
+                                <div id="creationStatus" class="mt-4" style="display: none;">
+                                    <div class="card">
+                                        <div class="card-header bg-info text-white">
+                                            <h6 class="mb-0"><i class="bi bi-info-circle"></i> Creation Progress</h6>
+                                        </div>
+                                        <div class="card-body">
+                                            <div class="progress mb-3" style="height: 25px;">
+                                                <div id="creationProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" 
+                                                     role="progressbar" style="width: 0%">0%</div>
+                                            </div>
+                                            <div id="creationStatusMessage" class="text-muted">
+                                                Initializing...
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </form>

@@ -89,6 +89,26 @@ document.getElementById('diskGb').addEventListener('input', (e) => {
     document.getElementById('diskGbValue').textContent = `${e.target.value} GB`;
 });
 
+// IPv6 configuration handlers
+document.getElementById('enableIpv6').addEventListener('change', (e) => {
+    const ipv6ModeGroup = document.getElementById('ipv6ModeGroup');
+    if (e.target.checked) {
+        ipv6ModeGroup.style.display = 'block';
+    } else {
+        ipv6ModeGroup.style.display = 'none';
+        document.getElementById('wireguardConfigGroup').style.display = 'none';
+    }
+});
+
+document.getElementById('ipv6Mode').addEventListener('change', (e) => {
+    const wireguardGroup = document.getElementById('wireguardConfigGroup');
+    if (e.target.value === 'wireguard') {
+        wireguardGroup.style.display = 'block';
+    } else {
+        wireguardGroup.style.display = 'none';
+    }
+});
+
 // Step navigation
 let currentStep = 1;
 
@@ -169,6 +189,10 @@ document.getElementById('createVpsForm').addEventListener('submit', async (e) =>
     createBtn.disabled = true;
     createBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Creating...';
     
+    // Show status display
+    const statusDiv = document.getElementById('creationStatus');
+    statusDiv.style.display = 'block';
+    
     const data = {
         name: document.getElementById('vpsName').value,
         distro: document.getElementById('distribution').value + ':' + document.getElementById('version').value,
@@ -180,6 +204,24 @@ document.getElementById('createVpsForm').addEventListener('submit', async (e) =>
         enable_ipv6: document.getElementById('enableIpv6').checked
     };
     
+    // Add IPv6 configuration if enabled
+    if (data.enable_ipv6) {
+        data.ipv6_mode = document.getElementById('ipv6Mode').value;
+        
+        // Add WireGuard config if selected
+        if (data.ipv6_mode === 'wireguard') {
+            const wgConfig = document.getElementById('wireguardConfig').value;
+            if (!wgConfig.trim()) {
+                alert('Please enter WireGuard configuration');
+                createBtn.disabled = false;
+                createBtn.innerHTML = '<i class="bi bi-plus-circle"></i> Create VPS';
+                statusDiv.style.display = 'none';
+                return;
+            }
+            data.wireguard_config = wgConfig;
+        }
+    }
+    
     try {
         const response = await fetch(`${API_BASE}/api/containers/create`, {
             method: 'POST',
@@ -190,19 +232,72 @@ document.getElementById('createVpsForm').addEventListener('submit', async (e) =>
         const result = await response.json();
         
         if (response.ok) {
-            alert(`VPS created successfully! ID: ${result.container_id}`);
-            window.location.href = '/';
+            // Start polling for status
+            const containerId = result.container_id;
+            pollCreationStatus(containerId);
         } else {
             alert(`Failed to create VPS: ${result.detail || 'Unknown error'}`);
             createBtn.disabled = false;
             createBtn.innerHTML = '<i class="bi bi-plus-circle"></i> Create VPS';
+            statusDiv.style.display = 'none';
         }
     } catch (error) {
         alert(`Error creating VPS: ${error.message}`);
         createBtn.disabled = false;
         createBtn.innerHTML = '<i class="bi bi-plus-circle"></i> Create VPS';
+        statusDiv.style.display = 'none';
     }
 });
+
+// Poll creation status
+async function pollCreationStatus(containerId) {
+    const statusMessageDiv = document.getElementById('creationStatusMessage');
+    const progressBar = document.getElementById('creationProgressBar');
+    
+    const pollInterval = setInterval(async () => {
+        try {
+            const response = await fetch(`${API_BASE}/api/containers/create-status/${containerId}`, {
+                headers: getAuthHeaders()
+            });
+            
+            if (response.ok) {
+                const status = await response.json();
+                
+                // Update progress bar
+                progressBar.style.width = `${status.progress}%`;
+                progressBar.textContent = `${status.progress}%`;
+                
+                // Update status message
+                statusMessageDiv.textContent = status.message;
+                
+                // Check if completed or failed
+                if (status.status === 'completed') {
+                    clearInterval(pollInterval);
+                    progressBar.classList.remove('progress-bar-animated');
+                    progressBar.classList.add('bg-success');
+                    setTimeout(() => {
+                        alert('VPS created successfully!');
+                        window.location.href = '/';
+                    }, 1000);
+                } else if (status.status === 'failed') {
+                    clearInterval(pollInterval);
+                    progressBar.classList.remove('progress-bar-animated');
+                    progressBar.classList.add('bg-danger');
+                    statusMessageDiv.innerHTML = `<span class="text-danger">Error: ${status.error || status.message}</span>`;
+                    
+                    const createBtn = document.getElementById('createBtn');
+                    createBtn.disabled = false;
+                    createBtn.innerHTML = '<i class="bi bi-plus-circle"></i> Create VPS';
+                }
+            } else {
+                // Status not found, might have completed
+                clearInterval(pollInterval);
+            }
+        } catch (error) {
+            console.error('Error polling status:', error);
+        }
+    }, 2000); // Poll every 2 seconds
+}
 
 // Initialize
 checkAuth();
