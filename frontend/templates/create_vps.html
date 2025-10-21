@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create VPS - ZenithStack</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- Navigation Bar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand fw-bold" href="/">
+                <i class="bi bi-layers"></i> ZenithStack
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">
+                            <i class="bi bi-speedometer2"></i> Dashboard
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/vps/create">
+                            <i class="bi bi-plus-circle"></i> Create VPS
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#">
+                            <i class="bi bi-diagram-3"></i> Network
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#">
+                            <i class="bi bi-gear"></i> Settings
+                        </a>
+                    </li>
+                </ul>
+                <div class="d-flex align-items-center">
+                    <span class="text-white me-3">
+                        <i class="bi bi-person-circle"></i> Admin
+                    </span>
+                    <button class="btn btn-outline-light btn-sm" id="logoutBtn">
+                        <i class="bi bi-box-arrow-right"></i> Logout
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-lg-8 mx-auto">
+                <div class="card shadow">
+                    <div class="card-header bg-primary text-white">
+                        <h4 class="mb-0"><i class="bi bi-plus-circle"></i> Create New VPS</h4>
+                    </div>
+                    <div class="card-body">
+                        <form id="createVpsForm">
+                            <!-- Step 1: Basic Configuration -->
+                            <div class="step active" id="step1">
+                                <h5 class="mb-3">Step 1: Basic Configuration</h5>
+                                
+                                <div class="mb-3">
+                                    <label for="vpsName" class="form-label">VPS Name <span class="text-danger">*</span></label>
+                                    <input type="text" class="form-control" id="vpsName" required placeholder="my-vps">
+                                    <div class="form-text">Use lowercase letters, numbers, and hyphens only</div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="distribution" class="form-label">Distribution <span class="text-danger">*</span></label>
+                                    <select class="form-select" id="distribution" required>
+                                        <option value="">Select a distribution...</option>
+                                        <option value="debian">Debian</option>
+                                        <option value="ubuntu">Ubuntu</option>
+                                        <option value="arch">Arch Linux</option>
+                                    </select>
+                                </div>
+
+                                <div class="mb-3" id="versionGroup">
+                                    <label for="version" class="form-label">Version <span class="text-danger">*</span></label>
+                                    <select class="form-select" id="version" required>
+                                        <option value="">Select version first...</option>
+                                    </select>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="rootPassword" class="form-label">Root Password <span class="text-danger">*</span></label>
+                                    <input type="password" class="form-control" id="rootPassword" required>
+                                    <div class="form-text" id="passwordStrength"></div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="confirmPassword" class="form-label">Confirm Password <span class="text-danger">*</span></label>
+                                    <input type="password" class="form-control" id="confirmPassword" required>
+                                </div>
+
+                                <div class="d-flex justify-content-end">
+                                    <button type="button" class="btn btn-primary" id="nextStep1">
+                                        Next <i class="bi bi-arrow-right"></i>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Step 2: Resource Allocation -->
+                            <div class="step d-none" id="step2">
+                                <h5 class="mb-3">Step 2: Resource Allocation</h5>
+
+                                <div class="mb-4">
+                                    <label for="cpuQuota" class="form-label">CPU Limit</label>
+                                    <div class="d-flex align-items-center gap-3">
+                                        <input type="range" class="form-range" id="cpuQuota" min="25" max="400" step="25" value="100">
+                                        <span class="badge bg-primary" id="cpuQuotaValue">100%</span>
+                                    </div>
+                                    <div class="form-text">100% = 1 CPU core</div>
+                                </div>
+
+                                <div class="mb-4">
+                                    <label for="memoryMb" class="form-label">Memory Limit (MB)</label>
+                                    <div class="d-flex align-items-center gap-3">
+                                        <input type="range" class="form-range" id="memoryMb" min="256" max="8192" step="256" value="512">
+                                        <span class="badge bg-primary" id="memoryMbValue">512 MB</span>
+                                    </div>
+                                </div>
+
+                                <div class="mb-4">
+                                    <label for="diskGb" class="form-label">Disk Quota (GB)</label>
+                                    <div class="d-flex align-items-center gap-3">
+                                        <input type="range" class="form-range" id="diskGb" min="5" max="100" step="5" value="10">
+                                        <span class="badge bg-primary" id="diskGbValue">10 GB</span>
+                                    </div>
+                                </div>
+
+                                <div class="d-flex justify-content-between">
+                                    <button type="button" class="btn btn-secondary" id="prevStep2">
+                                        <i class="bi bi-arrow-left"></i> Back
+                                    </button>
+                                    <button type="button" class="btn btn-primary" id="nextStep2">
+                                        Next <i class="bi bi-arrow-right"></i>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Step 3: Advanced Options -->
+                            <div class="step d-none" id="step3">
+                                <h5 class="mb-3">Step 3: Advanced Options</h5>
+
+                                <div class="mb-3">
+                                    <div class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" id="enableSsh" checked>
+                                        <label class="form-check-label" for="enableSsh">
+                                            Enable SSH Server
+                                        </label>
+                                    </div>
+                                    <div class="form-text">Install and configure OpenSSH server for remote access</div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <div class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" id="enableIpv6" checked>
+                                        <label class="form-check-label" for="enableIpv6">
+                                            Enable IPv6
+                                        </label>
+                                    </div>
+                                    <div class="form-text">Assign a globally routable IPv6 address</div>
+                                </div>
+
+                                <div class="alert alert-info">
+                                    <i class="bi bi-info-circle"></i> 
+                                    DNS servers (8.8.8.8, 1.1.1.1) will be automatically configured
+                                </div>
+
+                                <div class="d-flex justify-content-between">
+                                    <button type="button" class="btn btn-secondary" id="prevStep3">
+                                        <i class="bi bi-arrow-left"></i> Back
+                                    </button>
+                                    <button type="submit" class="btn btn-success" id="createBtn">
+                                        <i class="bi bi-plus-circle"></i> Create VPS
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
+
+                        <!-- Progress Bar -->
+                        <div class="mt-4">
+                            <div class="progress" style="height: 4px;">
+                                <div class="progress-bar" id="progressBar" role="progressbar" style="width: 33%"></div>
+                            </div>
+                            <div class="d-flex justify-content-between mt-2">
+                                <small class="text-muted step-indicator active">1. Basic</small>
+                                <small class="text-muted step-indicator">2. Resources</small>
+                                <small class="text-muted step-indicator">3. Advanced</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/create_vps.js"></script>
+</body>
+</html>

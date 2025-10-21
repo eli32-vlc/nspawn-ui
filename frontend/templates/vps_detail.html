@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VPS Details - ZenithStack</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- Navigation Bar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand fw-bold" href="/">
+                <i class="bi bi-layers"></i> ZenithStack
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">
+                            <i class="bi bi-speedometer2"></i> Dashboard
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/vps/create">
+                            <i class="bi bi-plus-circle"></i> Create VPS
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#">
+                            <i class="bi bi-diagram-3"></i> Network
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#">
+                            <i class="bi bi-gear"></i> Settings
+                        </a>
+                    </li>
+                </ul>
+                <div class="d-flex align-items-center">
+                    <span class="text-white me-3">
+                        <i class="bi bi-person-circle"></i> Admin
+                    </span>
+                    <button class="btn btn-outline-light btn-sm" id="logoutBtn">
+                        <i class="bi bi-box-arrow-right"></i> Logout
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-lg-12">
+                <!-- VPS Header -->
+                <div class="card shadow mb-3">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h3 class="mb-1" id="vpsName">VPS Name</h3>
+                                <span class="badge bg-success" id="vpsStatus">Running</span>
+                                <span class="badge bg-secondary" id="vpsDistro">Debian</span>
+                            </div>
+                            <div class="btn-group">
+                                <button class="btn btn-success" id="startBtn">
+                                    <i class="bi bi-play-fill"></i> Start
+                                </button>
+                                <button class="btn btn-warning" id="stopBtn">
+                                    <i class="bi bi-stop-fill"></i> Stop
+                                </button>
+                                <button class="btn btn-info" id="restartBtn">
+                                    <i class="bi bi-arrow-clockwise"></i> Restart
+                                </button>
+                                <button class="btn btn-danger" id="deleteBtn">
+                                    <i class="bi bi-trash"></i> Delete
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Network Information -->
+                <div class="card shadow mb-3">
+                    <div class="card-header bg-white">
+                        <h5 class="mb-0"><i class="bi bi-diagram-3"></i> Network Information</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label fw-bold">IPv4 Address (NAT)</label>
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" id="ipv4Address" readonly value="10.0.0.10">
+                                        <button class="btn btn-outline-secondary" id="copyIpv4">
+                                            <i class="bi bi-clipboard"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label fw-bold">IPv6 Address (Global)</label>
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" id="ipv6Address" readonly value="2001:db8::1">
+                                        <button class="btn btn-outline-secondary" id="copyIpv6">
+                                            <i class="bi bi-clipboard"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Resources -->
+                <div class="card shadow mb-3">
+                    <div class="card-header bg-white">
+                        <h5 class="mb-0"><i class="bi bi-speedometer"></i> Resource Usage</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-4">
+                                <div class="mb-3">
+                                    <label class="form-label">CPU Usage</label>
+                                    <div class="progress" style="height: 25px;">
+                                        <div class="progress-bar" id="cpuProgress" role="progressbar" style="width: 0%">0%</div>
+                                    </div>
+                                    <small class="text-muted">Limit: <span id="cpuLimit">100%</span></small>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="mb-3">
+                                    <label class="form-label">Memory Usage</label>
+                                    <div class="progress" style="height: 25px;">
+                                        <div class="progress-bar bg-warning" id="memoryProgress" role="progressbar" style="width: 0%">0%</div>
+                                    </div>
+                                    <small class="text-muted">Limit: <span id="memoryLimit">512 MB</span></small>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="mb-3">
+                                    <label class="form-label">Disk Usage</label>
+                                    <div class="progress" style="height: 25px;">
+                                        <div class="progress-bar bg-info" id="diskProgress" role="progressbar" style="width: 0%">0%</div>
+                                    </div>
+                                    <small class="text-muted">Limit: <span id="diskLimit">10 GB</span></small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Logs -->
+                <div class="card shadow">
+                    <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-terminal"></i> Container Logs</h5>
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-outline-secondary" id="refreshLogs">
+                                <i class="bi bi-arrow-clockwise"></i> Refresh
+                            </button>
+                            <button class="btn btn-outline-secondary" id="downloadLogs">
+                                <i class="bi bi-download"></i> Download
+                            </button>
+                            <button class="btn btn-outline-secondary" id="toggleAutoScroll">
+                                <i class="bi bi-arrow-down"></i> Auto-scroll
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="log-container" id="logContainer" style="height: 400px; overflow-y: auto; background: #1e1e1e; color: #d4d4d4; font-family: 'Courier New', monospace; padding: 15px;">
+                            <div class="text-center text-muted">
+                                Loading logs...
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/vps_detail.js"></script>
+</body>
+</html>
