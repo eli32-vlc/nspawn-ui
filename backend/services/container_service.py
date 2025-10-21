@@ -287,6 +287,9 @@ DHCP=yes
         
         # Configure DNS
         resolv_conf = container_dir / "etc" / "resolv.conf"
+        # Remove if it's a symlink to avoid issues
+        if resolv_conf.is_symlink():
+            resolv_conf.unlink()
         resolv_conf.write_text("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
     
     def _install_ssh(self, container_dir: Path, distro: str):
@@ -343,7 +346,11 @@ exit 0
         sshd_config = container_dir / "etc" / "ssh" / "sshd_config"
         if sshd_config.exists():
             config_text = sshd_config.read_text()
-            config_text += "\nPermitRootLogin yes\nPasswordAuthentication yes\n"
+            # Only add if not already present
+            if "PermitRootLogin yes" not in config_text:
+                config_text += "\nPermitRootLogin yes\n"
+            if "PasswordAuthentication yes" not in config_text:
+                config_text += "PasswordAuthentication yes\n"
             sshd_config.write_text(config_text)
     
     def _configure_wireguard(self, container_dir: Path, wireguard_config: str):
