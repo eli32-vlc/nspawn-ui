@@ -80,8 +80,9 @@ check_prerequisites() {
     log_info "Architecture: $ARCH"
 
     # Check disk space (at least 10GB free)
-    FREE_SPACE=$(df / | awk 'NR==2 {print $4}' | numfmt --from=iec)
-    if [[ $FREE_SPACE -lt 10485760 ]]; then  # 10GB in KB
+    # Use df in 1K-blocks (default); 10GB = 10 * 1024 * 1024 = 10485760 blocks
+    FREE_SPACE=$(df --output=avail / | tail -n 1)
+    if [[ $FREE_SPACE -lt 10485760 ]]; then  # 10GB in 1K blocks
         log_warn "Less than 10GB free space available. Installation may fail."
     else
         log_info "Sufficient disk space available"
@@ -157,7 +158,6 @@ install_dependencies() {
                 debootstrap \
                 python \
                 python-pip \
-                python-venv \
                 python-systemd \
                 bridge-utils \
                 iptables \
@@ -219,7 +219,8 @@ create_directories() {
 detect_ipv6() {
     log_info "Detecting IPv6 connectivity..."
     
-    if ping6 -c 1 -W 3 google.com &>/dev/null || ping6 -c 1 -W 3 ipv6.google.com &>/dev/null; then
+    # Use ping -6 where available; ping6 may not exist on all distros
+    if ping -6 -c 1 -W 3 google.com &>/dev/null || ping -6 -c 1 -W 3 ipv6.google.com &>/dev/null; then
         HAS_IPV6=true
         log_info "IPv6 connectivity detected"
         return 0
@@ -243,65 +244,9 @@ configure_networking() {
 net.ipv4.ip_forward=1
 net.ipv6.conf.all.forwarding=1
 EOF
-
-    # Create bridge interface
-    if command -v systemd-networkd &>/dev/null; then
-        # Use systemd-networkd for bridge configuration
-        cat > /etc/systemd/network/br0.netdev << EOF
-[NetDev]
-Name=br0
-Kind=bridge
-EOF
-
-        cat > /etc/systemd/network/br0.network << EOF
-[Match]
-Name=br0
-
-[Network]
-DHCP=ipv4
-IPv6AcceptRA=yes
-EOF
-
-        # Restart systemd-networkd
-        systemctl enable systemd-networkd
-        systemctl restart systemd-networkd
-    else
-        # Fallback to traditional configuration
-        log_info "Configuring bridge using traditional method..."
-        
-        # Find primary network interface
-        PRIMARY_IFACE=$(ip route | grep default | awk '{print $5}' | head -n 1)
-        if [[ -n "$PRIMARY_IFACE" ]]; then
-            # Backup original interface configuration
-            if [[ -f "/etc/network/interfaces" ]]; then
-                cp /etc/network/interfaces "/etc/network/interfaces.backup.$(date +%s)"
-                
-                # Configure bridge in /etc/network/interfaces
-                cat >> /etc/network/interfaces << EOF
-
-# Bridge interface for nspawn-vps
-auto br0
-iface br0 inet dhcp
-    bridge_ports $PRIMARY_IFACE
-    bridge_stp off
-    bridge_fd 0
-    bridge_maxwait 0
-
-iface $PRIMARY_IFACE inet manual
-EOF
-            fi
-        fi
-    fi
-
-    # Configure iptables for NAT
-    iptables -t nat -A POSTROUTING -o $(ip route | grep default | awk '{print $5}' | head -n 1) -j MASQUERADE
-    iptables -A FORWARD -i br0 -o $(ip route | grep default | awk '{print $5}' | head -n 1) -j ACCEPT
-    iptables -A FORWARD -i $(ip route | grep default | awk '{print $5}' | head -n 1) -o br0 -j ACCEPT
     
-    # Save iptables rules
-    if command -v iptables-persistent &>/dev/null; then
-        iptables-save > /etc/iptables/rules.v4
-    fi
+    # Bridge creation and NAT are managed by the nspawn-bridge.service to avoid duplication
+    log_info "Deferring bridge and NAT setup to nspawn-bridge.service"
 }
 
 # Interactive network configuration
@@ -430,6 +375,10 @@ deploy_backend() {
     pip install fastapi uvicorn websockets pydantic sqlalchemy python-multipart bcrypt python-jose[cryptography] passlib[bcrypt] python-dotenv
     
     # Copy backend file from our source
+    if [[ ! -f "$SCRIPT_DIR/backend/main.py" ]]; then
+        log_error "Backend source file $SCRIPT_DIR/backend/main.py not found!"
+        return 1
+    fi
     cp "$SCRIPT_DIR/backend/main.py" "$INSTALL_DIR/backend/main.py"
 
     # Compile Python bytecode for faster startup using py_compile
@@ -1595,7 +1544,7 @@ Type=simple
 User=nspawn-manager
 Group=nspawn-manager
 WorkingDirectory=$INSTALL_DIR
-Environment=PATH=$INSTALL_DIR/venv/bin
+Environment=PATH=$INSTALL_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 Environment=SECRET_KEY=$(openssl rand -base64 32)
 Environment=ADMIN_PASSWORD=admin123
 ExecStart=$INSTALL_DIR/venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8080 --log-level info
@@ -1625,7 +1574,7 @@ Type=oneshot
 RemainAfterExit=yes
 
 # Create the bridge
-ExecStart=/bin/bash -c '/usr/sbin/ip link add br0 type bridge && /usr/sbin/ip link set br0 up'
+ExecStart=/bin/bash -c 'ip link add br0 type bridge && ip link set br0 up'
 
 # Enable IP forwarding
 ExecStart=/bin/bash -c 'echo 1 > /proc/sys/net/ipv4/ip_forward && echo 1 > /proc/sys/net/ipv6/conf/all/forwarding'
@@ -1636,7 +1585,7 @@ ExecStart=/bin/bash -c 'DEFAULT_IFACE=$(ip route show default | awk '\''{for (i=
 # Save iptables rules
 ExecStart=/bin/bash -c 'iptables-save > /etc/iptables/rules.v4 2>/dev/null || true'
 
-ExecStop=/bin/bash -c 'DEFAULT_IFACE=$(ip route show default | awk '\''{for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}'\''); iptables -t nat -D POSTROUTING -o "$DEFAULT_IFACE" -j MASQUERADE 2>/dev/null || true && iptables -D FORWARD -i br0 -o "$DEFAULT_IFACE" -j ACCEPT 2>/dev/null || true && iptables -D FORWARD -i "$DEFAULT_IFACE" -o br0 -j ACCEPT 2>/dev/null || true && /usr/sbin/ip link set br0 down 2>/dev/null || true && /usr/sbin/ip link delete br0 2>/dev/null || true'
+ExecStop=/bin/bash -c 'DEFAULT_IFACE=$(ip route show default | awk '\''{for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}'\''); iptables -t nat -D POSTROUTING -o "$DEFAULT_IFACE" -j MASQUERADE 2>/dev/null || true && iptables -D FORWARD -i br0 -o "$DEFAULT_IFACE" -j ACCEPT 2>/dev/null || true && iptables -D FORWARD -i "$DEFAULT_IFACE" -o br0 -j ACCEPT 2>/dev/null || true && ip link set br0 down 2>/dev/null || true && ip link delete br0 2>/dev/null || true'
 
 [Install]
 WantedBy=network.target
@@ -1659,7 +1608,7 @@ show_completion_message() {
     echo -e "${GREEN}║  Access the WebUI at:                                                      ║${NC}"
     IPV4_ADDR=$(hostname -I | awk '{print $1}')
     echo -e "${GREEN}║    IPv4: http://$IPV4_ADDR:8080                                          ║${NC}"
-    if [[ -n "$IPV6_ADDR" ]]; then
+    if [[ -n "${IPV6_ADDR:-}" ]]; then
         echo -e "${GREEN}║    IPv6: http://[$(echo $IPV6_ADDR | cut -d'/' -f1)]:8080                ║${NC}"
     fi
     echo -e "${GREEN}║                                                                              ║${NC}"
