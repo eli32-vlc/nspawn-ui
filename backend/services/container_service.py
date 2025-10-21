@@ -215,25 +215,39 @@ class ContainerService:
     
     def _set_root_password(self, container_dir: Path, password: str):
         """Set root password in the container"""
-        # We need to chroot and set password
+        # Ensure tmp directory exists in container
+        tmp_dir = container_dir / "tmp"
+        tmp_dir.mkdir(exist_ok=True, mode=0o1777)
+        
         # Create a script to run in the container
         passwd_script = f"""#!/bin/bash
+set -e
 echo 'root:{password}' | chpasswd
+exit 0
 """
-        script_path = container_dir / "tmp" / "set_password.sh"
-        script_path.parent.mkdir(exist_ok=True)
+        script_path = tmp_dir / "set_password.sh"
         script_path.write_text(passwd_script)
         script_path.chmod(0o755)
         
-        # Run the script in chroot
-        subprocess.run(
-            ["systemd-nspawn", "-D", str(container_dir), "/tmp/set_password.sh"],
-            capture_output=True,
-            check=True
-        )
-        
-        # Clean up
-        script_path.unlink()
+        try:
+            # Run the script using systemd-nspawn with --quiet and --register=no for non-interactive execution
+            result = subprocess.run(
+                ["systemd-nspawn", "--quiet", "--register=no", "-D", str(container_dir), "/tmp/set_password.sh"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode != 0:
+                logger.error(f"Failed to set root password. Return code: {result.returncode}")
+                logger.error(f"Stdout: {result.stdout}")
+                logger.error(f"Stderr: {result.stderr}")
+                raise Exception(f"Failed to set root password: {result.stderr}")
+                
+        finally:
+            # Clean up
+            if script_path.exists():
+                script_path.unlink()
     
     def _configure_network(self, container_dir: Path, name: str, enable_ipv6: bool):
         """Configure container networking"""
@@ -277,36 +291,49 @@ DHCP=yes
     
     def _install_ssh(self, container_dir: Path, distro: str):
         """Install and configure SSH server in container"""
+        # Ensure tmp directory exists in container
+        tmp_dir = container_dir / "tmp"
+        tmp_dir.mkdir(exist_ok=True, mode=0o1777)
+        
         # Create script to install SSH
         install_script = """#!/bin/bash
+set -e
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y openssh-server
 systemctl enable ssh
+exit 0
 """
         if distro == "arch":
             install_script = """#!/bin/bash
+set -e
 pacman -Sy --noconfirm openssh
 systemctl enable sshd
+exit 0
 """
         
-        script_path = container_dir / "tmp" / "install_ssh.sh"
-        script_path.parent.mkdir(exist_ok=True)
+        script_path = tmp_dir / "install_ssh.sh"
         script_path.write_text(install_script)
         script_path.chmod(0o755)
         
         # Run the script in the container
         try:
-            subprocess.run(
-                ["systemd-nspawn", "-D", str(container_dir), "/tmp/install_ssh.sh"],
+            result = subprocess.run(
+                ["systemd-nspawn", "--quiet", "--register=no", "-D", str(container_dir), "/tmp/install_ssh.sh"],
                 capture_output=True,
-                timeout=300,
-                check=True
+                text=True,
+                timeout=300
             )
+            
+            if result.returncode != 0:
+                logger.warning(f"SSH installation failed. Return code: {result.returncode}")
+                logger.warning(f"Stdout: {result.stdout}")
+                logger.warning(f"Stderr: {result.stderr}")
+            
         except subprocess.TimeoutExpired:
             logger.warning("SSH installation timed out")
-        except subprocess.CalledProcessError as e:
-            logger.warning(f"SSH installation failed: {e.stderr}")
+        except Exception as e:
+            logger.warning(f"SSH installation error: {str(e)}")
         finally:
             # Clean up
             if script_path.exists():
@@ -330,27 +357,41 @@ systemctl enable sshd
         wg_config_file.write_text(wireguard_config)
         wg_config_file.chmod(0o600)
         
+        # Ensure tmp directory exists in container
+        tmp_dir = container_dir / "tmp"
+        tmp_dir.mkdir(exist_ok=True, mode=0o1777)
+        
         # Install wireguard in container
         install_script = """#!/bin/bash
+set -e
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y wireguard wireguard-tools
 systemctl enable wg-quick@wg0
+exit 0
 """
         
-        script_path = container_dir / "tmp" / "install_wg.sh"
+        script_path = tmp_dir / "install_wg.sh"
         script_path.write_text(install_script)
         script_path.chmod(0o755)
         
         try:
-            subprocess.run(
-                ["systemd-nspawn", "-D", str(container_dir), "/tmp/install_wg.sh"],
+            result = subprocess.run(
+                ["systemd-nspawn", "--quiet", "--register=no", "-D", str(container_dir), "/tmp/install_wg.sh"],
                 capture_output=True,
-                timeout=300,
-                check=True
+                text=True,
+                timeout=300
             )
+            
+            if result.returncode != 0:
+                logger.warning(f"WireGuard installation failed. Return code: {result.returncode}")
+                logger.warning(f"Stdout: {result.stdout}")
+                logger.warning(f"Stderr: {result.stderr}")
+                
+        except subprocess.TimeoutExpired:
+            logger.warning("WireGuard installation timed out")
         except Exception as e:
-            logger.warning(f"WireGuard installation failed: {e}")
+            logger.warning(f"WireGuard installation error: {str(e)}")
         finally:
             if script_path.exists():
                 script_path.unlink()
