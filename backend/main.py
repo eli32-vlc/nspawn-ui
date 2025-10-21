@@ -71,6 +71,16 @@ async def vps_detail_page(request: Request, vps_id: str):
     """Serve the VPS detail page"""
     return templates.TemplateResponse("vps_detail.html", {"request": request, "vps_id": vps_id})
 
+@app.get("/network", response_class=HTMLResponse)
+async def network_page(request: Request):
+    """Serve the network configuration page"""
+    return templates.TemplateResponse("network.html", {"request": request})
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    """Serve the settings page"""
+    return templates.TemplateResponse("settings.html", {"request": request})
+
 # Health check endpoint
 @app.get("/health")
 async def health_check():
