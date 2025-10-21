@@ -378,6 +378,7 @@ EOF
                 read -p "Enter WireGuard server public key: " WG_SERVER_PUBKEY
                 read -p "Enter WireGuard client private key: " WG_CLIENT_PRIVKEY
                 read -p "Enter WireGuard endpoint (host:port): " WG_ENDPOINT
+                read -p "Enter WireGuard tunnel address(es) for this host (comma separated, e.g., 2001:db8::2/64): " WG_INTERFACE_ADDRS
                 read -p "Enter allowed IPv6 subnets (comma separated): " WG_ALLOWED_IPS
                 
                 # Install wireguard if not already installed
@@ -400,7 +401,7 @@ EOF
                 cat > /etc/wireguard/wg0.conf << EOF
 [Interface]
 PrivateKey = $WG_CLIENT_PRIVKEY
-Address = $WG_ALLOWED_IPS
+Address = $WG_INTERFACE_ADDRS
 
 [Peer]
 PublicKey = $WG_SERVER_PUBKEY
