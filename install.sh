@@ -22,8 +22,20 @@ MACHINES_DIR="/var/lib/machines"
 
 # Logging function
 log() {
-    echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" >> /var/log/nspawn-manager/install.log
+    local message="$1"
+    local timestamp
+    timestamp="$(date +'%Y-%m-%d %H:%M:%S')"
+
+    echo -e "${BLUE}[$timestamp]${NC} $message"
+
+    if [[ ! -d "$LOG_DIR" ]]; then
+        mkdir -p "$LOG_DIR"
+    fi
+    if [[ ! -f "$LOG_DIR/install.log" ]]; then
+        touch "$LOG_DIR/install.log"
+    fi
+
+    echo "[$timestamp] $message" >> "$LOG_DIR/install.log"
 }
 
 log_info() {
@@ -102,6 +114,7 @@ install_dependencies() {
                 python3 \
                 python3-pip \
                 python3-venv \
+                python3-systemd \
                 bridge-utils \
                 iptables \
                 dnsmasq \
@@ -123,6 +136,7 @@ install_dependencies() {
                 python3 \
                 python3-pip \
                 python3-venv \
+                python3-systemd \
                 bridge-utils \
                 iptables \
                 dnsmasq \
@@ -144,6 +158,7 @@ install_dependencies() {
                 python \
                 python-pip \
                 python-venv \
+                python-systemd \
                 bridge-utils \
                 iptables \
                 dnsmasq \
@@ -411,7 +426,7 @@ deploy_backend() {
     source "$INSTALL_DIR/venv/bin/activate"
     
     # Install Python dependencies
-    pip install fastapi uvicorn websockets pydantic sqlalchemy python-multipart bcrypt python-jose[cryptography] passlib[bcrypt] python-dotenv systemd-python
+    pip install fastapi uvicorn websockets pydantic sqlalchemy python-multipart bcrypt python-jose[cryptography] passlib[bcrypt] python-dotenv
     
     # Copy backend file from our source
     cp "$SCRIPT_DIR/backend/main.py" "$INSTALL_DIR/backend/main.py"
@@ -1691,4 +1706,3 @@ main() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
-EOF
