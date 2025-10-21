@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 import json
 import tempfile
+import crypt
+import warnings
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,9 @@ class ContainerService:
             if status_callback:
                 status_callback(message)
             logger.info(f"[{name}] {message}")
+        
+        # Initialize container_dir to None for cleanup handling
+        container_dir = None
         
         try:
             # Parse distro
@@ -208,46 +213,96 @@ class ContainerService:
         except Exception as e:
             update_status(f"Error: {str(e)}")
             # Clean up on failure
-            if container_dir.exists():
+            if container_dir is not None and container_dir.exists():
                 logger.error(f"Cleaning up failed container {name}")
                 subprocess.run(["rm", "-rf", str(container_dir)], capture_output=True)
             raise
     
     def _set_root_password(self, container_dir: Path, password: str):
-        """Set root password in the container"""
-        # Ensure tmp directory exists in container
-        tmp_dir = container_dir / "tmp"
-        tmp_dir.mkdir(exist_ok=True, mode=0o1777)
-        
-        # Create a script to run in the container
-        passwd_script = f"""#!/bin/bash
-set -e
-echo 'root:{password}' | chpasswd
-exit 0
-"""
-        script_path = tmp_dir / "set_password.sh"
-        script_path.write_text(passwd_script)
-        script_path.chmod(0o755)
-        
+        """Set root password in the container by directly modifying the shadow file"""
         try:
-            # Run the script using systemd-nspawn with --quiet and --register=no for non-interactive execution
-            result = subprocess.run(
-                ["systemd-nspawn", "--quiet", "--register=no", "-D", str(container_dir), "/tmp/set_password.sh"],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
+            # Verify /etc/passwd exists and has root entry
+            passwd_file = container_dir / "etc" / "passwd"
+            if not passwd_file.exists():
+                logger.error(f"Passwd file not found at {passwd_file}")
+                raise Exception("Passwd file not found in container. The container may not be properly bootstrapped.")
             
-            if result.returncode != 0:
-                logger.error(f"Failed to set root password. Return code: {result.returncode}")
-                logger.error(f"Stdout: {result.stdout}")
-                logger.error(f"Stderr: {result.stderr}")
-                raise Exception(f"Failed to set root password: {result.stderr}")
-                
-        finally:
-            # Clean up
-            if script_path.exists():
-                script_path.unlink()
+            # Check if root entry exists in passwd file
+            passwd_content = passwd_file.read_text()
+            if not any(line.startswith("root:") for line in passwd_content.splitlines()):
+                logger.error("Root entry not found in /etc/passwd")
+                raise Exception("Root user not found in /etc/passwd. The container may not be properly bootstrapped.")
+            
+            # Path to the shadow file in the container
+            shadow_file = container_dir / "etc" / "shadow"
+            
+            # Check if shadow file exists
+            if not shadow_file.exists():
+                logger.error(f"Shadow file not found at {shadow_file}")
+                raise Exception("Shadow file not found in container. The container may not be properly bootstrapped.")
+            
+            # Generate password hash using SHA-512 (standard for modern Linux)
+            # Suppress deprecation warning for crypt module
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=DeprecationWarning)
+                password_hash = crypt.crypt(password, crypt.mksalt(crypt.METHOD_SHA512))
+            
+            logger.info("Generated password hash for root user")
+            
+            # Read the current shadow file
+            shadow_content = shadow_file.read_text()
+            lines = shadow_content.splitlines()
+            
+            # Find and update the root entry
+            root_found = False
+            new_lines = []
+            for line in lines:
+                if line.startswith("root:"):
+                    # Parse the shadow line format: username:password:lastchanged:min:max:warn:inactive:expire:reserved
+                    parts = line.split(":")
+                    if len(parts) >= 2:
+                        # Replace the password field (second field)
+                        parts[1] = password_hash
+                        # Update lastchanged to current days since epoch (roughly)
+                        # Using a simple approximation: current year - 1970 * 365
+                        from datetime import datetime
+                        days_since_epoch = (datetime.now() - datetime(1970, 1, 1)).days
+                        if len(parts) >= 3:
+                            parts[2] = str(days_since_epoch)
+                        new_lines.append(":".join(parts))
+                        root_found = True
+                        logger.info("Updated root password in shadow file")
+                    else:
+                        logger.warning(f"Malformed root entry in shadow file: {line}")
+                        new_lines.append(line)
+                else:
+                    new_lines.append(line)
+            
+            if not root_found:
+                # If root entry doesn't exist, add it
+                # Format: root:hash:days_since_epoch:0:99999:7:::
+                from datetime import datetime
+                days_since_epoch = (datetime.now() - datetime(1970, 1, 1)).days
+                root_entry = f"root:{password_hash}:{days_since_epoch}:0:99999:7:::"
+                new_lines.insert(0, root_entry)
+                logger.info("Added new root entry to shadow file")
+            
+            # Write back the shadow file with proper permissions
+            shadow_file.write_text("\n".join(new_lines) + "\n")
+            shadow_file.chmod(0o640)  # rw-r----- as is standard for shadow files
+            
+            # Ensure the shadow file is owned by root (we're running as root)
+            # The chown will work since we're running with elevated privileges
+            try:
+                os.chown(shadow_file, 0, 0)  # uid=0 (root), gid=0 (root)
+            except PermissionError:
+                logger.warning("Could not set ownership of shadow file to root:root")
+            
+            logger.info("Successfully set root password in container")
+            
+        except Exception as e:
+            logger.error(f"Failed to set root password: {str(e)}")
+            raise Exception(f"Failed to set root password: {str(e)}")
     
     def _configure_network(self, container_dir: Path, name: str, enable_ipv6: bool):
         """Configure container networking"""
@@ -321,8 +376,16 @@ exit 0
         
         # Run the script in the container
         try:
+            # Use --bind-ro=/etc/resolv.conf to ensure DNS works during installation
             result = subprocess.run(
-                ["systemd-nspawn", "--quiet", "--register=no", "-D", str(container_dir), "/tmp/install_ssh.sh"],
+                [
+                    "systemd-nspawn",
+                    "--quiet",
+                    "--register=no",
+                    "--bind-ro=/etc/resolv.conf",
+                    "-D", str(container_dir),
+                    "/tmp/install_ssh.sh"
+                ],
                 capture_output=True,
                 text=True,
                 timeout=300
@@ -332,6 +395,8 @@ exit 0
                 logger.warning(f"SSH installation failed. Return code: {result.returncode}")
                 logger.warning(f"Stdout: {result.stdout}")
                 logger.warning(f"Stderr: {result.stderr}")
+            else:
+                logger.info("SSH server installed successfully")
             
         except subprocess.TimeoutExpired:
             logger.warning("SSH installation timed out")
@@ -383,8 +448,16 @@ exit 0
         script_path.chmod(0o755)
         
         try:
+            # Use --bind-ro=/etc/resolv.conf to ensure DNS works during installation
             result = subprocess.run(
-                ["systemd-nspawn", "--quiet", "--register=no", "-D", str(container_dir), "/tmp/install_wg.sh"],
+                [
+                    "systemd-nspawn",
+                    "--quiet",
+                    "--register=no",
+                    "--bind-ro=/etc/resolv.conf",
+                    "-D", str(container_dir),
+                    "/tmp/install_wg.sh"
+                ],
                 capture_output=True,
                 text=True,
                 timeout=300
@@ -394,6 +467,8 @@ exit 0
                 logger.warning(f"WireGuard installation failed. Return code: {result.returncode}")
                 logger.warning(f"Stdout: {result.stdout}")
                 logger.warning(f"Stderr: {result.stderr}")
+            else:
+                logger.info("WireGuard installed successfully")
                 
         except subprocess.TimeoutExpired:
             logger.warning("WireGuard installation timed out")
