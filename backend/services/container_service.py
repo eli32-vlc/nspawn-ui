@@ -376,8 +376,16 @@ exit 0
         
         # Run the script in the container
         try:
+            # Use --bind-ro=/etc/resolv.conf to ensure DNS works during installation
             result = subprocess.run(
-                ["systemd-nspawn", "--quiet", "--register=no", "-D", str(container_dir), "/tmp/install_ssh.sh"],
+                [
+                    "systemd-nspawn",
+                    "--quiet",
+                    "--register=no",
+                    "--bind-ro=/etc/resolv.conf",
+                    "-D", str(container_dir),
+                    "/tmp/install_ssh.sh"
+                ],
                 capture_output=True,
                 text=True,
                 timeout=300
@@ -387,6 +395,8 @@ exit 0
                 logger.warning(f"SSH installation failed. Return code: {result.returncode}")
                 logger.warning(f"Stdout: {result.stdout}")
                 logger.warning(f"Stderr: {result.stderr}")
+            else:
+                logger.info("SSH server installed successfully")
             
         except subprocess.TimeoutExpired:
             logger.warning("SSH installation timed out")
@@ -438,8 +448,16 @@ exit 0
         script_path.chmod(0o755)
         
         try:
+            # Use --bind-ro=/etc/resolv.conf to ensure DNS works during installation
             result = subprocess.run(
-                ["systemd-nspawn", "--quiet", "--register=no", "-D", str(container_dir), "/tmp/install_wg.sh"],
+                [
+                    "systemd-nspawn",
+                    "--quiet",
+                    "--register=no",
+                    "--bind-ro=/etc/resolv.conf",
+                    "-D", str(container_dir),
+                    "/tmp/install_wg.sh"
+                ],
                 capture_output=True,
                 text=True,
                 timeout=300
@@ -449,6 +467,8 @@ exit 0
                 logger.warning(f"WireGuard installation failed. Return code: {result.returncode}")
                 logger.warning(f"Stdout: {result.stdout}")
                 logger.warning(f"Stderr: {result.stderr}")
+            else:
+                logger.info("WireGuard installed successfully")
                 
         except subprocess.TimeoutExpired:
             logger.warning("WireGuard installation timed out")
